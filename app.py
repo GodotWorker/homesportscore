@@ -374,5 +374,13 @@ def stream():
                        b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
     return Response(stream_with_context(generate()), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/api/begin', methods=['GET', 'POST'])
+def api_begin():
+    ip = request.args.get('ip') or request.form.get('ip')
+    if not ip:
+        return jsonify({'error': 'No IP provided'}), 400
+    set_begin_ip(ip)
+    return jsonify({'success': True, 'ip': ip})
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0')
