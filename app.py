@@ -1,3 +1,17 @@
+# --- Begin Game IP ---
+BEGIN_IP_FILE = 'begin_ip.json'
+def set_begin_ip(ip):
+  with open(BEGIN_IP_FILE, 'w') as f:
+    json.dump({'ip': ip}, f)
+
+def get_begin_ip():
+  if os.path.exists(BEGIN_IP_FILE):
+    with open(BEGIN_IP_FILE, 'r') as f:
+      try:
+        return json.load(f).get('ip')
+      except Exception:
+        return None
+  return None
 from flask import Flask, request, jsonify, Response
 import os
 import json
@@ -6,6 +20,7 @@ from flask import stream_with_context
 
 app = Flask(__name__)
 STATE_FILE = 'score_state.json'
+HISTORY_FILE = 'score_history.json'
 
 def get_default_state():
     return {
@@ -17,26 +32,139 @@ def get_default_state():
         'lastSide': None  # Add lastSide to state
     }
 
+
 def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            try:
-                return json.load(f)
-            except Exception:
-                return get_default_state()
-    return get_default_state()
+  if os.path.exists(STATE_FILE):
+    with open(STATE_FILE, 'r') as f:
+      try:
+        return json.load(f)
+      except Exception:
+        return get_default_state()
+  return get_default_state()
+
+def save_history(state):
+  history = []
+  if os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, 'r') as f:
+      try:
+        history = json.load(f)
+      except Exception:
+        history = []
+  history.append(state)
+  with open(HISTORY_FILE, 'w') as f:
+    json.dump(history, f)
+
+def pop_history():
+  history = []
+  if os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, 'r') as f:
+      try:
+        history = json.load(f)
+      except Exception:
+        history = []
+  if len(history) > 1:
+    history.pop()  # Remove current state
+    prev = history[-1]
+    with open(HISTORY_FILE, 'w') as f:
+      json.dump(history, f)
+    return prev
+  return None
+
 
 def save_state(state):
-    with open(STATE_FILE, 'w') as f:
-        json.dump(state, f)
+  with open(STATE_FILE, 'w') as f:
+    json.dump(state, f)
+  save_history(state)
 
 @app.route('/api/score')
 def api_score():
     state = load_state()
     return jsonify(state)
 
+
 @app.route('/')
 def index():
+    user_ip = request.remote_addr
+    begin_ip = get_begin_ip()
+    if begin_ip and user_ip == begin_ip:
+        # Serve New Game Setup HTML
+        html = """
+<!DOCTYPE html>
+<html class=\"dark\" lang=\"en\"><head>
+<meta charset=\"utf-8\"/>
+<meta content=\"width=device-width, initial-scale=1.0\" name=\"viewport\"/>
+<title>New Game Setup</title>
+<link href=\"https://fonts.googleapis.com\" rel=\"preconnect\"/>
+<link crossorigin=\"\" href=\"https://fonts.gstatic.com/\" rel=\"preconnect\"/>
+<link href=\"https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;700;900&amp;display=swap\" rel=\"stylesheet\"/>
+<script src=\"https://cdn.tailwindcss.com?plugins=forms,container-queries\"></script>
+<style>body { min-height: max(884px, 100dvh); } .form-select { background-image: url('data:image/svg+xml,%3csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 20 20\'%3e%3cpath stroke=\'%239ca3af\' stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'1.5\' d=\'M6 8l4 4 4-4\'/\%3e%3c/svg%3e'); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; padding-right: 2.5rem; -webkit-print-color-adjust: exact; print-color-adjust: exact; }</style>
+<body class=\"bg-background-light dark:bg-background-dark font-display\">
+<div class=\"flex flex-col h-screen justify-between\">
+<div>
+<header class=\"p-4 flex items-center justify-between\">
+<button class=\"text-slate-800 dark:text-white\"><svg fill=\"currentColor\" height=\"24\" viewBox=\"0 0 256 256\" width=\"24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z\"></path></svg></button>
+<h1 class=\"text-xl font-bold text-slate-900 dark:text-white text-center flex-1 pr-6\">New Game</h1>
+</header>
+<main class=\"p-4 space-y-6\">
+<div class=\"flex items-center justify-between space-x-2\">
+<div class=\"flex-1\">
+<select aria-label=\"Team 1\" class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"team-1\">
+<option>Select Team</option>
+{''.join([f'<option>{team}</option>' for team in load_teams()])}
+</select>
+</div>
+<span class=\"text-slate-500 dark:text-slate-400 font-bold text-lg\">vs</span>
+<div class=\"flex-1\">
+<select aria-label=\"Team 2\" class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"team-2\">
+<option>Select Team</option>
+{''.join([f'<option>{team}</option>' for team in load_teams()])}
+</select>
+</div>
+</div>
+<div class=\"space-y-2\">
+<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"game-type\">Game Type</label>
+<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"game-type\">
+<option>Select Game Type</option>
+<option>Semis</option>
+<option>Finals</option>
+<option>Playoffs</option>
+<option>League Game</option>
+<option>Exhibition</option>
+</select>
+</div>
+<div class=\"grid grid-cols-2 gap-4\">
+<div class=\"space-y-2\">
+<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"age-group\">Age Group</label>
+<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"age-group\">
+<option>Select Age</option>
+<option>U10</option>
+<option>U12</option>
+<option>U14</option>
+<option>U16</option>
+<option>U18</option>
+</select>
+</div>
+<div class=\"space-y-2\">
+<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"gender\">Gender</label>
+<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"gender\">
+<option>Select Gender</option>
+<option>G (Girls)</option>
+<option>B (Boys)</option>
+<option>Co-ed</option>
+</select>
+</div>
+</div>
+</main>
+</div>
+<footer class=\"p-4 pb-8\">
+<button class=\"w-full bg-red-600 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 dark:focus:ring-offset-background-dark\">Go Live!</button>
+</footer>
+</div>
+</body></html>
+        """
+        return Response(html, mimetype='text/html')
+    # Otherwise, serve scoreboard
     state = load_state()
     # Ensure defaults for display
     for k in ['homeRuns', 'awayRuns', 'balls', 'strikes', 'outs']:
@@ -163,38 +291,65 @@ setInterval(updateScore, 2000);
     """
     return Response(html, mimetype='text/html')
 
+
 @app.route('/api/update')
 def api_update():
-    state = load_state()
-    params = request.args
-    # Reset all values if reset=true
-    if params.get('reset') == 'true':
-        state = get_default_state()
-        save_state(state)
-        return Response('Score reset', mimetype='text/plain')
-    # If parameters exist, update the score/state
-    if params:
-        # Ensure defaults
-        for k in ['homeRuns', 'awayRuns', 'balls', 'strikes', 'outs']:
-            if state.get(k) is None:
-                state[k] = '0'
-        # Update runs depending on side
-        if params.get('side') == 'home':
-            state['homeRuns'] = params.get('runs', state['homeRuns'])
-            state['lastSide'] = 'home'
-        elif params.get('side') == 'away':
-            state['awayRuns'] = params.get('runs', state['awayRuns'])
-            state['lastSide'] = 'away'
-        # Update batter state
-        if params.get('balls') is not None:
-            state['balls'] = params.get('balls')
-        if params.get('strikes') is not None:
-            state['strikes'] = params.get('strikes')
-        if params.get('outs') is not None:
-            state['outs'] = params.get('outs')
-        save_state(state)
-        return Response('Score updated', mimetype='text/plain')
-    return Response('No update parameters provided', mimetype='text/plain')
+  state = load_state()
+  params = request.args
+  # Reset all values if reset=true
+  if params.get('reset') == 'true':
+    state = get_default_state()
+    save_state(state)
+    return Response('Score reset', mimetype='text/plain')
+  updated = False
+  # Ensure defaults
+  for k in ['homeRuns', 'awayRuns', 'balls', 'strikes', 'outs']:
+    if state.get(k) is None:
+      state[k] = '0'
+
+  # Only update runs based on side
+  side = params.get('side')
+  if side in ['home', 'away']:
+    run_key = 'homeRuns' if side == 'home' else 'awayRuns'
+    # Increment/decrement
+    if params.get('add_runs') is not None:
+      try:
+        state[run_key] = str(int(state[run_key]) + int(params.get('add_runs')))
+        updated = True
+      except Exception:
+        pass
+    # Direct set
+    if params.get('runs') is not None:
+      state[run_key] = params.get('runs')
+      updated = True
+    state['lastSide'] = side
+    updated = True
+  # Balls, strikes, outs can still be set directly or incremented
+  for k in ['balls', 'strikes', 'outs']:
+    add_key = f'add_{k}'
+    if add_key in params:
+      try:
+        state[k] = str(int(state[k]) + int(params[add_key]))
+        updated = True
+      except Exception:
+        pass
+    if params.get(k) is not None:
+      state[k] = params.get(k)
+      updated = True
+  if updated:
+    save_state(state)
+    return Response('Score updated', mimetype='text/plain')
+  return Response('No update parameters provided', mimetype='text/plain')
+
+# Undo endpoint
+@app.route('/api/undo', methods=['POST'])
+def api_undo():
+  prev = pop_history()
+  if prev:
+    with open(STATE_FILE, 'w') as f:
+      json.dump(prev, f)
+    return Response('Undo successful', mimetype='text/plain')
+  return Response('Nothing to undo', mimetype='text/plain')
 
 # --- Video Feed Handling ---
 
