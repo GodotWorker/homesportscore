@@ -1,3 +1,88 @@
+# --- Imports and Flask App ---
+from flask import Flask, request, jsonify, Response
+import os
+import json
+from threading import Lock
+from flask import stream_with_context
+import uuid
+from datetime import datetime
+
+app = Flask(__name__)
+
+# --- Game Lifecycle Endpoints ---
+@app.route('/api/games', methods=['GET'])
+def api_list_games():
+    status = request.args.get('status')
+    return jsonify(list_games(status))
+
+@app.route('/api/game', methods=['POST'])
+def api_begin_game():
+    data = request.json
+    game = {
+        'id': str(uuid.uuid4()),
+        'teamA': data.get('teamA'),
+        'teamB': data.get('teamB'),
+        'scoreA': 0,
+        'scoreB': 0,
+        'status': 'live',
+        'startTime': datetime.now().isoformat(),
+        'period': data.get('period', '1st Qtr'),
+        'meta': data.get('meta', {})
+    }
+    add_game(game)
+    return jsonify(game)
+
+@app.route('/api/game/<game_id>', methods=['PATCH'])
+def api_update_game(game_id):
+    updates = request.json
+    update_game(game_id, updates)
+    return jsonify(get_game(game_id))
+
+@app.route('/api/game/<game_id>/end', methods=['POST'])
+def api_end_game(game_id):
+    update_game(game_id, {'status': 'past', 'endTime': datetime.now().isoformat()})
+    return jsonify(get_game(game_id))
+# --- Game Data Model and Storage ---
+GAMES_FILE = 'games.json'
+
+def load_games():
+  if os.path.exists(GAMES_FILE):
+    with open(GAMES_FILE, 'r') as f:
+      try:
+        return json.load(f)
+      except Exception:
+        return []
+  return []
+
+def save_games(games):
+  with open(GAMES_FILE, 'w') as f:
+    json.dump(games, f)
+
+def add_game(game):
+  games = load_games()
+  games.append(game)
+  save_games(games)
+
+def update_game(game_id, updates):
+  games = load_games()
+  for game in games:
+    if game.get('id') == game_id:
+      game.update(updates)
+      break
+  save_games(games)
+
+def get_game(game_id):
+  games = load_games()
+  for game in games:
+    if game.get('id') == game_id:
+      return game
+  return None
+
+def list_games(status=None):
+  games = load_games()
+  if status:
+    return [g for g in games if g.get('status') == status]
+  return games
 # --- Begin Game IP ---
 BEGIN_IP_FILE = 'begin_ip.json'
 def set_begin_ip(ip):
@@ -82,212 +167,114 @@ def api_score():
     return jsonify(state)
 
 
+
 @app.route('/')
 def index():
-    user_ip = request.remote_addr
-    begin_ip = get_begin_ip()
-    if begin_ip and user_ip == begin_ip:
-        # Serve New Game Setup HTML
-        html = """
-<!DOCTYPE html>
-<html class=\"dark\" lang=\"en\"><head>
-<meta charset=\"utf-8\"/>
-<meta content=\"width=device-width, initial-scale=1.0\" name=\"viewport\"/>
-<title>New Game Setup</title>
-<link href=\"https://fonts.googleapis.com\" rel=\"preconnect\"/>
-<link crossorigin=\"\" href=\"https://fonts.gstatic.com/\" rel=\"preconnect\"/>
-<link href=\"https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;700;900&amp;display=swap\" rel=\"stylesheet\"/>
-<script src=\"https://cdn.tailwindcss.com?plugins=forms,container-queries\"></script>
-<style>body { min-height: max(884px, 100dvh); } .form-select { background-image: url('data:image/svg+xml,%3csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 20 20\'%3e%3cpath stroke=\'%239ca3af\' stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'1.5\' d=\'M6 8l4 4 4-4\'/\%3e%3c/svg%3e'); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; padding-right: 2.5rem; -webkit-print-color-adjust: exact; print-color-adjust: exact; }</style>
-<body class=\"bg-background-light dark:bg-background-dark font-display\">
-<div class=\"flex flex-col h-screen justify-between\">
-<div>
-<header class=\"p-4 flex items-center justify-between\">
-<button class=\"text-slate-800 dark:text-white\"><svg fill=\"currentColor\" height=\"24\" viewBox=\"0 0 256 256\" width=\"24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z\"></path></svg></button>
-<h1 class=\"text-xl font-bold text-slate-900 dark:text-white text-center flex-1 pr-6\">New Game</h1>
-</header>
-<main class=\"p-4 space-y-6\">
-<div class=\"flex items-center justify-between space-x-2\">
-<div class=\"flex-1\">
-<select aria-label=\"Team 1\" class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"team-1\">
-<option>Select Team</option>
-{''.join([f'<option>{team}</option>' for team in load_teams()])}
-</select>
-</div>
-<span class=\"text-slate-500 dark:text-slate-400 font-bold text-lg\">vs</span>
-<div class=\"flex-1\">
-<select aria-label=\"Team 2\" class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"team-2\">
-<option>Select Team</option>
-{''.join([f'<option>{team}</option>' for team in load_teams()])}
-</select>
-</div>
-</div>
-<div class=\"space-y-2\">
-<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"game-type\">Game Type</label>
-<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"game-type\">
-<option>Select Game Type</option>
-<option>Semis</option>
-<option>Finals</option>
-<option>Playoffs</option>
-<option>League Game</option>
-<option>Exhibition</option>
-</select>
-</div>
-<div class=\"grid grid-cols-2 gap-4\">
-<div class=\"space-y-2\">
-<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"age-group\">Age Group</label>
-<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"age-group\">
-<option>Select Age</option>
-<option>U10</option>
-<option>U12</option>
-<option>U14</option>
-<option>U16</option>
-<option>U18</option>
-</select>
-</div>
-<div class=\"space-y-2\">
-<label class=\"text-sm font-medium text-slate-700 dark:text-slate-300\" for=\"gender\">Gender</label>
-<select class=\"form-select w-full rounded-lg border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary\" id=\"gender\">
-<option>Select Gender</option>
-<option>G (Girls)</option>
-<option>B (Boys)</option>
-<option>Co-ed</option>
-</select>
-</div>
-</div>
-</main>
-</div>
-<footer class=\"p-4 pb-8\">
-<button class=\"w-full bg-red-600 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 dark:focus:ring-offset-background-dark\">Go Live!</button>
-</footer>
-</div>
-</body></html>
-        """
-        return Response(html, mimetype='text/html')
-    # Otherwise, serve scoreboard
-    state = load_state()
-    # Ensure defaults for display
-    for k in ['homeRuns', 'awayRuns', 'balls', 'strikes', 'outs']:
-        if state.get(k) is None:
-            state[k] = '0'
-    last_side = state.get('lastSide')
-    # Serve HTML scoreboard
+    # Load all games
+    games = load_games()
+    # Build HTML for each game
+    def game_card(game):
+        live_dot = '<span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>' if game['status'] == 'live' else ''
+        period = f'<p class="text-text-secondary text-sm">{game.get("period", "")}</p>' if game['status'] == 'live' else f'<p class="text-text-secondary text-sm">{game.get("startTime", "")}</p>'
+        opacity = '' if game['status'] == 'live' else 'opacity-70'
+        return f'''
+        <div class="bg-card-color rounded-lg p-4 flex items-center justify-between {opacity}">
+            <div class="flex flex-col">
+                <p class="font-semibold">{game.get("teamA", "Team A")} vs. {game.get("teamB", "Team B")}</p>
+                <div class="flex items-center gap-2">
+                    {live_dot}
+                    {period}
+                </div>
+            </div>
+            <div class="text-lg font-bold">{game.get("scoreA", 0)} - {game.get("scoreB", 0)}</div>
+        </div>
+        '''
+    game_cards = '\n'.join([game_card(g) for g in games])
+    # Serve main screen UI
     html = f"""
 <!DOCTYPE html>
-<html lang=\"en\">
-<head>
+<html lang=\"en\"><head>
 <meta charset=\"utf-8\"/>
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>
 <link crossorigin=\"\" href=\"https://fonts.gstatic.com/\" rel=\"preconnect\"/>
-<link as=\"style\" href=\"https://fonts.googleapis.com/css2?display=swap&family=Lexend:wght@400;500;700;900&family=Noto+Sans:wght@400;500;700;900\" onload=\"this.rel='stylesheet'\" rel=\"stylesheet\"/>
-<title>Live Score</title>
+<link as=\"style\" href=\"https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900\" onload=\"this.rel='stylesheet'\" rel=\"stylesheet\"/>
+<link href=\"https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined\" rel=\"stylesheet\"/>
+<title>Live Scoreboard</title>
+<link href=\"data:image/x-icon;base64,\" rel=\"icon\" type=\"image/x-icon\"/>
 <script src=\"https://cdn.tailwindcss.com?plugins=forms,container-queries\"></script>
 <style type=\"text/tailwindcss\">
-  :root {{
-    --primary-color: #0b73da;
-    --background-color: #111827;
-    --card-color: #1f2937;
-    --text-primary: #ffffff;
-    --text-secondary: #9ca3af;
-    --border-color: #374151;
-  }}
-</style>
-<style>
-  .live-dot {{
-    animation: blink 3s infinite;
-  }}
-  @keyframes blink {{
-    0%, 50%, 100% {{ opacity: 1; }}
-    25%, 75% {{ opacity: 0; }}
-  }}
-  .highlight {{
-    background-color: #37415155;
-    border-radius: 0.75rem;
-    transition: background 0.3s;
-    box-shadow: 0 0 0 2px #37415155;
-    padding: 0.25em 0.5em;
-    position: relative;
-    display: inline-block;
-  }}
-  .batting-label {{
-    display: block;
-    font-size: 0.75rem;
-    color: #9ca3af;
-    text-align: center;
-    margin-top: 0.15em;
-    font-weight: 500;
-    letter-spacing: 0.02em;
-  }}
-</style>
-</head>
-<body class=\"bg-background-color text-text-primary\" style='font-family: Lexend, "Noto Sans", sans-serif;'>
-<div class=\"relative flex h-full min-h-screen w-full flex-col justify-center items-center overflow-hidden p-4\">
-  <div class=\"absolute top-0 left-0 w-full h-full bg-gradient-to-br from-primary-color/20 via-transparent to-transparent opacity-50\"></div>
-  <div class=\"w-full max-w-md bg-card-color/50 backdrop-blur-xl rounded-2xl shadow-2xl p-6 md:p-8 z-10\">
-    <!-- Header with LIVE dot -->
-    <div class=\"flex justify-center items-center mb-6\">
-      <span class=\"text-red-500 text-sm font-bold live-dot\">● LIVE</span>
-    </div>
-    <!-- Scoreboard -->
-    <div class=\"flex items-center justify-center mb-6\">
-      <span id=\"homeRuns\" class=\"text-5xl md:text-7xl font-black text-text-primary mx-4{' highlight' if last_side == 'home' else ''}\">{state['homeRuns']}
-        {"<span class='batting-label'>Currently Batting</span>" if last_side == 'home' else ""}
-      </span>
-      <span class=\"text-4xl md:text-5xl font-light text-text-secondary\">-</span>
-      <span id=\"awayRuns\" class=\"text-5xl md:text-7xl font-black text-text-primary mx-4{' highlight' if last_side == 'away' else ''}\">{state['awayRuns']}
-        {"<span class='batting-label'>Currently Batting</span>" if last_side == 'away' else ""}
-      </span>
-    </div>
-    <!-- Current batter info -->
-    <div class=\"grid grid-cols-3 gap-4 text-center bg-background-color/30 p-4 rounded-lg\">
-      <div>
-        <p class=\"text-sm text-text-secondary font-medium\">BALLS</p>
-        <p id=\"balls\" class=\"text-2xl font-bold text-text-primary\">{state['balls']}</p>
-      </div>
-      <div>
-        <p class=\"text-sm text-text-secondary font-medium\">STRIKES</p>
-        <p id=\"strikes\" class=\"text-2xl font-bold text-text-primary\">{state['strikes']}</p>
-      </div>
-      <div>
-        <p class=\"text-sm text-text-secondary font-medium\">OUTS</p>
-        <p id=\"outs\" class=\"text-2xl font-bold text-text-primary\">{state['outs']}</p>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-function updateScore() {{
-  fetch('/api/score')
-    .then(response => response.json())
-    .then(data => {{
-      document.getElementById('homeRuns').textContent = data.homeRuns;
-      document.getElementById('awayRuns').textContent = data.awayRuns;
-      document.getElementById('balls').textContent = data.balls;
-      document.getElementById('strikes').textContent = data.strikes;
-      document.getElementById('outs').textContent = data.outs;
-      // Highlight last side and show batting label
-      document.getElementById('homeRuns').classList.remove('highlight');
-      document.getElementById('awayRuns').classList.remove('highlight');
-      document.querySelectorAll('.batting-label').forEach(e => e.remove());
-      if (data.lastSide === 'home') {{
-        document.getElementById('homeRuns').classList.add('highlight');
-        let label = document.createElement('span');
-        label.className = 'batting-label';
-        label.textContent = 'Currently Batting';
-        document.getElementById('homeRuns').appendChild(label);
-      }} else if (data.lastSide === 'away') {{
-        document.getElementById('awayRuns').classList.add('highlight');
-        let label = document.createElement('span');
-        label.className = 'batting-label';
-        label.textContent = 'Currently Batting';
-        document.getElementById('awayRuns').appendChild(label);
+      :root {{
+        --primary-color: #0b73da;
+        --background-color: #111827;
+        --card-color: #1f2937;
+        --text-primary: #ffffff;
+        --text-secondary: #9ca3af;
+        --border-color: #374151;
       }}
-    }});
-}}
-setInterval(updateScore, 2000);
-</script>
-</body>
-</html>
+      .material-symbols-outlined {{
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }}
+    </style>
+<style>
+    body {{
+      min-height: max(884px, 100dvh);
+    }}
+  </style>
+  </head>
+<body class=\"bg-background-color text-text-primary\" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class=\"relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden\">
+<div class=\"flex-grow\">
+<header class=\"sticky top-0 z-10 bg-background-color/80 backdrop-blur-sm\">
+<div class=\"flex items-center p-4 justify-between\">
+<h1 class=\"text-xl font-bold tracking-tight text-center flex-1\">Live Scores</h1>
+<button class=\"flex items-center justify-center rounded-full h-10 w-10 text-text-primary hover:bg-card-color transition-colors\">
+<span class=\"material-symbols-outlined\"> settings </span>
+</button>
+</div>
+<div class=\"border-b border-border-color px-4\">
+<nav class=\"flex gap-4 -mb-px\">
+<a class=\"flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2\" href=\"#\">
+<span class=\"text-sm font-semibold\">All</span>
+</a>
+<a class=\"flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors\" href=\"#\">
+<span class=\"text-sm font-semibold\">Live</span>
+</a>
+<a class=\"flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors\" href=\"#\">
+<span class=\"text-sm font-semibold\">Upcoming</span>
+</a>
+</nav>
+</div>
+</header>
+<main class=\"p-4 space-y-4\">
+{game_cards}
+</main>
+</div>
+<footer class=\"sticky bottom-0 bg-background-color/80 backdrop-blur-sm border-t border-border-color\">
+<nav class=\"flex justify-around py-2\">
+<a class=\"flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors\" href=\"#\">
+<span class=\"material-symbols-outlined\"> home </span>
+<span class=\"text-xs font-medium\">Home</span>
+</a>
+<a class=\"flex flex-col items-center justify-center gap-1 text-primary-color w-full py-2 rounded-lg bg-primary-color/10\" href=\"#\">
+<span class=\"material-symbols-outlined\" style=\"font-variation-settings: 'FILL' 1\"> emoji_events </span>
+<span class=\"text-xs font-medium\">Scores</span>
+</a>
+<a class=\"flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors\" href=\"#\">
+<span class=\"material-symbols-outlined\"> leaderboard </span>
+<span class=\"text-xs font-medium\">Standings</span>
+</a>
+<a class=\"flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors\" href=\"#\">
+<span class=\"material-symbols-outlined\"> newspaper </span>
+<span class=\"text-xs font-medium\">News</span>
+</a>
+<a class=\"flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors\" href=\"#\">
+<span class=\"material-symbols-outlined\"> more_horiz </span>
+<span class=\"text-xs font-medium\">More</span>
+</a>
+</nav>
+</footer>
+</div>
+
+</body></html>
     """
     return Response(html, mimetype='text/html')
 
