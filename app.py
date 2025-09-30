@@ -360,9 +360,9 @@ WEB_LOGIN_TEMPLATE = ADMIN_HEAD + f"""
     </div>
 </div>
 <script>
-    {{% if error %}}
+    {% if error %}
         document.getElementById('error-message').classList.remove('hidden');
-    {{% endif %}}
+    {% endif %}
 </script>
 </body>
 </html>
