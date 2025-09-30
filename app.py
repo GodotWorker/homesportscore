@@ -829,7 +829,7 @@ def web_login():
         password = request.form.get('password')
         if password == ADMIN_PASSWORD:
             response = make_response(redirect(url_for('web_admin')))
-            response.set_cookie('admin_logged_in', 'true', max_age=3600)
+            response.set_cookie('admin_logged_in', 'true', max_age=3600, secure=(request.scheme == 'https'), httponly=True, samesite='Lax')
             logger.info("Admin login successful")
             return response
         else:
@@ -842,7 +842,7 @@ def web_login():
 def web_logout():
     """Logs the admin out by removing the cookie."""
     response = make_response(redirect(url_for('softball_scores')))
-    response.set_cookie('admin_logged_in', '', expires=0)
+    response.set_cookie('admin_logged_in', '', expires=0, secure=(request.scheme == 'https'), httponly=True, samesite='Lax')
     logger.info("Admin logged out")
     return response
 
