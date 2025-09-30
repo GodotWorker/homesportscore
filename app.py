@@ -340,7 +340,7 @@ ADMIN_HEAD = r"""
 <body class="bg-background-light dark:bg-background-dark font-display text-slate-800 dark:text-white">
 """
 
-WEB_LOGIN_TEMPLATE = ADMIN_HEAD + r"""
+WEB_LOGIN_TEMPLATE = ADMIN_HEAD + f"""
 <div class="flex flex-col h-screen justify-center items-center p-4">
     <div class="w-full max-w-sm p-8 bg-white dark:bg-slate-800 rounded-xl shadow-2xl">
         <h1 class="text-2xl font-bold text-center text-primary mb-2">Web Admin Access</h1>
@@ -356,17 +356,17 @@ WEB_LOGIN_TEMPLATE = ADMIN_HEAD + r"""
                 </button>
             </div>
         </form>
-        <p class="text-xs text-center text-slate-500 dark:text-slate-400 mt-4">Hint: Password is "{}"</p>
+        <p class="text-xs text-center text-slate-500 dark:text-slate-400 mt-4">Hint: Password is "{ADMIN_PASSWORD}"</p>
     </div>
 </div>
 <script>
-    {% if error %}
+    {{% if error %}}
         document.getElementById('error-message').classList.remove('hidden');
-    {% endif %}
+    {{% endif %}}
 </script>
 </body>
 </html>
-""".format(ADMIN_PASSWORD)
+"""
 
 ADMIN_DASHBOARD_TEMPLATE = ADMIN_HEAD + r"""
 <div class="flex flex-col min-h-screen">
