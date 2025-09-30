@@ -82,7 +82,7 @@ GAMES_DATA = [
 # --- 2. HTML Templates (FIXED: Added 'r' prefix to all template strings) ---
 
 # r prefix prevents SyntaxWarning: invalid escape sequence
-HTML_TEMPLATE = r"""
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -92,105 +92,134 @@ HTML_TEMPLATE = r"""
 <link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
 <title>Live Softball Scores</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <style type="text/tailwindcss">
-    :root {
-      --primary-color: #f97316; /* Orange for energy */
-      --background-color: #111827;
-      --card-color: #1f2937;
-      --text-primary: #ffffff;
-      --text-secondary: #9ca3af;
-      --border-color: #374151;
-    }
-    .material-symbols-outlined {
-      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-    }
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
 </style>
 <style>
-    body { min-height: 100vh; }
+  body {
+    min-height: max(884px, 100dvh);
+  }
 </style>
 </head>
 <body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
-
-<div class="relative flex h-auto min-h-screen w-full flex-col justify-start group/design-root overflow-x-hidden">
-
-    <!-- Header -->
-    <header class="sticky top-0 z-10 bg-background-color/80 backdrop-blur-sm border-b border-border-color">
-        <div class="flex items-center p-4">
-            <h1 class="text-2xl font-black tracking-tight text-center flex-1 text-primary">SOFTBALL LIVE SCORES</h1>
-            <a href="{{ url_for('web_login') }}" class="text-sm font-semibold text-text-secondary hover:text-primary transition-colors ml-4">Admin</a>
-        </div>
-    </header>
-
-    <!-- Main Content Area with Games Loop -->
-    <main class="p-4 space-y-4 flex-grow max-w-lg mx-auto w-full">
-        
-        {% for game in games %}
-        <a href="{{ url_for('game_detail', game_code=game.code) }}" class="block">
-            <div class="bg-card-color rounded-xl shadow-lg p-4 flex items-center justify-between transition duration-300 hover:shadow-primary/20
-                 {% if game.status == 'UPCOMING' %}opacity-70{% endif %}">
-                
-                <div class="flex flex-col">
-                    <p class="font-bold text-lg leading-tight">{{ game.away_team }} vs. {{ game.home_team }}</p>
-
-                    <div class="flex items-center gap-2 mt-1">
-                        {% if game.status == 'LIVE' %}
-                        <span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
-                        <p class="text-text-secondary text-sm">{{ game.period }}</p>
-                        {% else %}
-                        <p class="text-text-secondary text-sm font-medium">{{ game.time }}</p>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <!-- Score & Game Code -->
-                <div class="text-right">
-                    <div class="text-4xl font-extrabold text-primary">
-                        {{ game.away_score }} - {{ game.home_score }}
-                    </div>
-                    <p class="text-xs text-text-secondary mt-1">Code: {{ game.code }}</p>
-                </div>
-            </div>
-        </a>
-        {% else %}
-        <div class="text-center p-8 bg-card-color/50 rounded-lg mt-12">
-            <p class="text-lg text-text-secondary">No live games currently scheduled.</p>
-        </div>
-        {% endfor %}
-        
-    </main>
-
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+<div class="flex-grow">
+<header class="sticky top-0 z-10 bg-background-color/80 backdrop-blur-sm">
+<div class="flex items-center p-4 justify-between">
+<h1 class="text-xl font-bold tracking-tight text-center flex-1">Live Scores</h1>
+<a href="{{ url_for('web_login') }}" class="flex items-center justify-center rounded-full h-10 w-10 text-text-primary hover:bg-card-color transition-colors">
+<span class="material-symbols-outlined"> settings </span>
+</a>
 </div>
-
+<div class="border-b border-border-color px-4">
+<nav class="flex gap-4 -mb-px">
+<a class="flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2" href="#">
+<span class="text-sm font-semibold">All</span>
+</a>
+<a class="flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors" href="#">
+<span class="text-sm font-semibold">Live</span>
+</a>
+<a class="flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors" href="#">
+<span class="text-sm font-semibold">Upcoming</span>
+</a>
+</nav>
+</div>
+</header>
+<main class="p-4 space-y-4">
+{% for game in games %}
+<a href="{{ url_for('game_detail', game_code=game.code) }}">
+<div class="bg-card-color rounded-lg p-4 flex items-center justify-between {% if game.status == 'UPCOMING' %}opacity-70{% endif %}">
+<div class="flex flex-col">
+<p class="font-semibold">{{ game.away_team }} vs. {{ game.home_team }}</p>
+<div class="flex items-center gap-2">
+{% if game.status == 'LIVE' %}
+<span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
+<p class="text-text-secondary text-sm">{{ game.period }}</p>
+{% else %}
+<p class="text-text-secondary text-sm">{{ game.time }}</p>
+{% endif %}
+</div>
+</div>
+<div class="text-lg font-bold">{{ game.away_score }} - {{ game.home_score }}</div>
+</div>
+</a>
+{% else %}
+<div class="text-center p-8 bg-card-color rounded-lg mt-12">
+<p class="text-lg text-text-secondary">No live games currently scheduled.</p>
+</div>
+{% endfor %}
+</main>
+</div>
+<footer class="sticky bottom-0 bg-background-color/80 backdrop-blur-sm border-t border-border-color">
+<nav class="flex justify-around py-2">
+<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
+<span class="material-symbols-outlined"> home </span>
+<span class="text-xs font-medium">Home</span>
+</a>
+<a class="flex flex-col items-center justify-center gap-1 text-primary-color w-full py-2 rounded-lg bg-primary-color/10" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1"> emoji_events </span>
+<span class="text-xs font-medium">Scores</span>
+</a>
+<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
+<span class="material-symbols-outlined"> leaderboard </span>
+<span class="text-xs font-medium">Standings</span>
+</a>
+<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
+<span class="material-symbols-outlined"> newspaper </span>
+<span class="text-xs font-medium">News</span>
+</a>
+<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
+<span class="material-symbols-outlined"> more_horiz </span>
+<span class="text-xs font-medium">More</span>
+</a>
+</nav>
+</footer>
+</div>
 </body>
 </html>
 """
 
-GAME_DETAIL_TEMPLATE = r"""
+GAME_DETAIL_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en"><head>
+<html lang="en">
+<head>
 <meta charset="utf-8"/>
-<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
 <link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
 <title>Live Score</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <style type="text/tailwindcss">
-    :root {
-      --primary-color: #f97316;
-      --background-color: #111827;
-      --card-color: #1f2937;
-      --text-primary: #ffffff;
-      --text-secondary: #9ca3af;
-      --border-color: #374151;
-    }
-    .material-symbols-outlined {
-      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-    }
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
 </style>
 <style>
-    body { min-height: 100dvh; }
+  body {
+    min-height: max(884px, 100dvh);
+  }
 </style>
 </head>
 <body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
@@ -206,26 +235,22 @@ GAME_DETAIL_TEMPLATE = r"""
 {% endif %}
 </div>
 <div class="flex items-center gap-2 text-sm font-semibold">
-    <span class="text-text-secondary">{% if game.period %}{{ game.period }}{% else %}{{ game.time }}{% endif %}</span>
-<svg class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M5 15l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span class="text-text-secondary">{% if game.period %}{{ game.period }}{% else %}{{ game.time }}{% endif %}</span>
+<svg class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M5 15l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
 </div>
 </div>
-<!-- Team and Score Layout -->
 <div class="flex items-center justify-around text-center mb-6">
-<!-- Away Team Column -->
 <div class="flex flex-col items-center gap-3">
 <div class="w-20 h-20 md:w-24 md:h-24 rounded-full bg-border-color flex items-center justify-center">
 <span class="text-4xl font-bold text-white">{{ game.away_team[0] }}</span>
 </div>
 <h2 class="text-xl md:text-2xl font-bold text-text-primary">{{ game.away_team }}</h2>
 </div>
-<!-- Score Center -->
 <div class="flex items-center">
 <span class="text-5xl md:text-7xl font-black text-text-primary mx-4">{{ game.away_score }}</span>
 <span class="text-4xl md:text-5xl font-light text-text-secondary">-</span>
 <span class="text-5xl md:text-7xl font-black text-text-primary mx-4">{{ game.home_score }}</span>
 </div>
-<!-- Home Team Column -->
 <div class="flex flex-col items-center gap-3">
 <div class="w-20 h-20 md:w-24 md:h-24 rounded-full bg-border-color flex items-center justify-center">
 <span class="text-4xl font-bold text-white">{{ game.home_team[0] }}</span>
@@ -250,31 +275,29 @@ GAME_DETAIL_TEMPLATE = r"""
 </div>
 <div class="mt-6 flex justify-center items-center">
 <div class="relative w-24 h-24">
-<!-- Base Runner Diamond -->
 <!-- Second Base (Left) -->
-<div class="absolute top-1/2 left-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45 
-     {% if '2' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
+<div class="absolute top-1/2 left-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45
+     {% if '2' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
 <!-- Third Base (Top) -->
-<div class="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-6 rounded-sm transform rotate-45 
-     {% if '3' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
+<div class="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-6 rounded-sm transform rotate-45
+     {% if '3' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
 <!-- First Base (Right) -->
-<div class="absolute top-1/2 right-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45 
-     {% if '1' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
+<div class="absolute top-1/2 right-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45
+     {% if '1' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
 <!-- Home Plate (Bottom) -->
-<div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-6 bg-border-color rounded-sm transform rotate-45"></div>
+<div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-6 bg-primary-color rounded-sm transform rotate-45"></div>
 </div>
 </div>
 {% endif %}
 </div>
-<!-- Refresh Button for viewing scores -->
 <div class="absolute bottom-4 right-4 z-10">
 <button onclick="window.location.reload()" class="flex items-center justify-center rounded-full h-12 w-12 text-text-primary bg-card-color/50 hover:bg-card-color transition-colors backdrop-blur-sm">
 <span class="material-symbols-outlined"> refresh </span>
 </button>
 </div>
 </div>
-
-</body></html>
+</body>
+</html>
 """
 
 # Reusable admin head
@@ -1070,3 +1093,6 @@ def page_not_found(e):
     </body></html>
     """
     return render_template_string(error_html), 404
+
+if __name__ == "__main__":
+    app.run(debug=True)
