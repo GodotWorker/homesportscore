@@ -347,7 +347,7 @@ WEB_LOGIN_TEMPLATE = ADMIN_HEAD + """
       </div>
       <div class="space-y-4">
         <input type="password" name="password" placeholder="Password" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select" autofocus>
-        <button type="submit" class="w-full bg-primary-color text-white font-bold py-3 px-5 rounded-lg hover:bg-primary-color/80 transition-colors">
+        <button type="submit" class="w-full bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 transition-colors">
           Login
         </button>
       </div>
@@ -394,10 +394,10 @@ ADMIN_DASHBOARD_TEMPLATE = ADMIN_HEAD + """
     </div>
   </main>
   <footer class="p-4 border-t border-border-color bg-background-color/80 backdrop-blur-sm flex justify-between gap-4">
-    <a href="{{ url_for('new_game_setup', device_id='web') }}" class="flex-1 text-center bg-primary-color text-white font-bold py-3 px-5 rounded-lg hover:bg-primary-color/80 transition-colors">
+    <a href="{{ url_for('new_game_setup', device_id='web') }}" class="flex-1 text-center bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 transition-colors">
       Create New Game (Web)
     </a>
-    <a href="{{ url_for('hotspot_setup', device_id='DEV-' ~ device_id_suffix) }}" class="flex-1 text-center bg-text-secondary text-white font-bold py-3 px-5 rounded-lg hover:bg-text-secondary/80 transition-colors">
+    <a href="{{ url_for('hotspot_setup', device_id='DEV-' ~ device_id_suffix) }}" class="flex-1 text-center bg-blue-900 text-white font-bold py-3 px-5 rounded-lg hover:bg-blue-800 transition-colors">
       Setup New Device
     </a>
   </footer>
@@ -416,7 +416,7 @@ HOTSPOT_SETUP_TEMPLATE = ADMIN_HEAD + """
       <div class="space-y-4">
         <input type="text" id="ssid" value="AdminHotspot" placeholder="Hotspot Name (SSID)" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select">
         <input type="password" id="password" value="12345678" placeholder="Password" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select">
-        <button onclick="simulateConnection('{{ device_id }}')" class="w-full bg-primary-color text-white font-bold py-3 px-5 rounded-lg hover:bg-primary-color/80 transition-colors">
+        <button onclick="simulateConnection('{{ device_id }}')" class="w-full bg-blue-900 text-white font-bold py-3 px-5 rounded-lg hover:bg-blue-800 transition-colors">
           Connect & Configure
         </button>
       </div>
@@ -534,7 +534,7 @@ NEW_GAME_SETUP_TEMPLATE = ADMIN_HEAD + """
     </main>
   </div>
   <footer class="p-4 pb-8 bg-background-color/80 backdrop-blur-sm border-t border-border-color">
-    <button form="new-game-form" type="submit" class="w-full bg-primary-color text-white font-bold py-3 px-5 rounded-lg hover:bg-primary-color/80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-color">
+    <button form="new-game-form" type="submit" class="w-full bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
       Go Live!
     </button>
   </footer>
@@ -632,13 +632,13 @@ SCORING_INTERFACE_TEMPLATE = ADMIN_HEAD + """
     </div>
     <!-- Scoring Controls -->
     <div class="grid grid-cols-2 gap-4 bg-card-color rounded-xl p-6 shadow-lg">
-      <button onclick="sendUpdate('H_SCORE_PLUS')" class="bg-primary-color text-white font-bold py-3 px-4 rounded-lg hover:bg-primary-color/90 transition-colors min-h-[48px] text-sm">Home Run +1</button>
-      <button onclick="sendUpdate('A_SCORE_PLUS')" class="bg-primary-color text-white font-bold py-3 px-4 rounded-lg hover:bg-primary-color/90 transition-colors min-h-[48px] text-sm">Away Run +1</button>
-      <button onclick="sendUpdate('BALL_PLUS')" class="bg-text-secondary text-white font-bold py-3 px-4 rounded-lg hover:bg-text-secondary/90 transition-colors min-h-[48px] text-sm">Ball +1</button>
-      <button onclick="sendUpdate('STRIKE_PLUS')" class="bg-text-secondary text-white font-bold py-3 px-4 rounded-lg hover:bg-text-secondary/90 transition-colors min-h-[48px] text-sm">Strike +1</button>
+      <button onclick="sendUpdate('H_SCORE_PLUS')" class="bg-blue-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-800 transition-colors min-h-[48px] text-sm">Home Run +1</button>
+      <button onclick="sendUpdate('A_SCORE_PLUS')" class="bg-blue-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-800 transition-colors min-h-[48px] text-sm">Away Run +1</button>
+      <button onclick="sendUpdate('BALL_PLUS')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm">Ball +1</button>
+      <button onclick="sendUpdate('STRIKE_PLUS')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm">Strike +1</button>
       <button onclick="sendUpdate('OUT_PLUS')" class="bg-red-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-600 transition-colors min-h-[48px] text-sm">Out +1</button>
-      <button onclick="sendUpdate('NEXT_INNING')" class="bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm">Next Half Inning</button>
-      <button onclick="sendUpdate('RESET_COUNT')" class="bg-text-secondary text-white font-bold py-3 px-4 rounded-lg hover:bg-text-secondary/90 transition-colors min-h-[48px] text-sm col-span-2">Reset Count</button>
+      <button onclick="sendUpdate('NEXT_INNING')" class="bg-blue-700 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 transition-colors min-h-[48px] text-sm">Next Half Inning</button>
+      <button onclick="sendUpdate('RESET_COUNT')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm col-span-2">Reset Count</button>
     </div>
     <!-- Status Message -->
     <div id="status-message" class="p-3 rounded-lg text-center hidden text-sm font-medium bg-green-100 text-text-primary"></div>
@@ -932,3 +932,6 @@ def page_not_found(e):
     </body></html>
     """
     return render_template_string(error_html), 404
+
+if __name__ == "__main__":
+    app.run(debug=True)
