@@ -2,6 +2,7 @@ import json
 import uuid
 import random
 import string
+import re
 from flask import Flask, render_template_string, redirect, url_for, request, make_response, jsonify
 
 # --- 1. Configuration & Helper Functions ---
@@ -11,6 +12,18 @@ def generate_game_code(length=7):
     """Generates a unique, short, alphanumeric code (e.g., 6NH3D2E)."""
     chars = string.ascii_uppercase + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
+
+def ordinal(n):
+    if n % 100 in (11, 12, 13):
+        return f"{n}th"
+    elif n % 10 == 1:
+        return f"{n}st"
+    elif n % 10 == 2:
+        return f"{n}nd"
+    elif n % 10 == 3:
+        return f"{n}rd"
+    else:
+        return f"{n}th"
 
 # Simple password for web-based access (in a real app, this would use proper authentication)
 ADMIN_PASSWORD = "softballadmin"
@@ -124,14 +137,17 @@ HTML_TEMPLATE = """
 </div>
 <div class="border-b border-border-color px-4">
 <nav class="flex gap-4 -mb-px">
-<a class="flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2" href="#">
+<a class="{% if filter == 'all' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=all">
 <span class="text-sm font-semibold">All</span>
 </a>
-<a class="flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors" href="#">
+<a class="{% if filter == 'live' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=live">
 <span class="text-sm font-semibold">Live</span>
 </a>
-<a class="flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors" href="#">
+<a class="{% if filter == 'upcoming' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=upcoming">
 <span class="text-sm font-semibold">Upcoming</span>
+</a>
+<a class="{% if filter == 'past' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=past">
+<span class="text-sm font-semibold">Past</span>
 </a>
 </nav>
 </div>
@@ -146,6 +162,8 @@ HTML_TEMPLATE = """
 {% if game.status == 'LIVE' %}
 <span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
 <p class="text-text-secondary text-sm">{{ game.period }}</p>
+{% elif game.status == 'FINISHED' %}
+<p class="text-text-secondary text-sm font-bold">FINAL</p>
 {% else %}
 <p class="text-text-secondary text-sm">{{ game.time }}</p>
 {% endif %}
@@ -161,30 +179,6 @@ HTML_TEMPLATE = """
 {% endfor %}
 </main>
 </div>
-<footer class="sticky bottom-0 bg-background-color/80 backdrop-blur-sm border-t border-border-color">
-<nav class="flex justify-around py-2">
-<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
-<span class="material-symbols-outlined"> home </span>
-<span class="text-xs font-medium">Home</span>
-</a>
-<a class="flex flex-col items-center justify-center gap-1 text-primary-color w-full py-2 rounded-lg bg-primary-color/10" href="#">
-<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1"> emoji_events </span>
-<span class="text-xs font-medium">Scores</span>
-</a>
-<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
-<span class="material-symbols-outlined"> leaderboard </span>
-<span class="text-xs font-medium">Standings</span>
-</a>
-<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
-<span class="material-symbols-outlined"> newspaper </span>
-<span class="text-xs font-medium">News</span>
-</a>
-<a class="flex flex-col items-center justify-center gap-1 text-text-secondary w-full py-2 hover:text-primary-color transition-colors" href="#">
-<span class="material-symbols-outlined"> more_horiz </span>
-<span class="text-xs font-medium">More</span>
-</a>
-</nav>
-</footer>
 </div>
 </body>
 </html>
@@ -229,6 +223,8 @@ GAME_DETAIL_TEMPLATE = """
 <div class="flex items-center gap-2">
 {% if game.status == 'LIVE' %}
 <span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
+{% elif game.status == 'FINISHED' %}
+<span class="text-text-secondary text-sm font-bold">FINAL</span>
 {% else %}
 <span class="text-text-secondary text-sm font-bold">{{ game.status }}</span>
 {% endif %}
@@ -386,6 +382,11 @@ ADMIN_DASHBOARD_TEMPLATE = ADMIN_HEAD + """
           </a>
           <span class="text-xs text-text-secondary">Code: {{ game.code }}</span>
         </div>
+        {% if game.status == 'UPCOMING' %}
+        <div class="pt-2">
+          <a href="{{ url_for('go_live', game_code=game.code) }}" class="text-sm font-medium text-green-600 hover:underline block">Go Live</a>
+        </div>
+        {% endif %}
       </div>
       {% endfor %}
       {% if not games %}
@@ -530,6 +531,17 @@ NEW_GAME_SETUP_TEMPLATE = ADMIN_HEAD + """
             </select>
           </div>
         </div>
+        <div class="space-y-2 mt-6">
+          <label class="text-sm font-medium text-text-secondary" for="status">Start Status</label>
+          <select name="status" id="status" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color">
+            <option value="LIVE">Start Live</option>
+            <option value="UPCOMING">Upcoming</option>
+          </select>
+        </div>
+        <div id="time-section" class="space-y-2 mt-6 hidden">
+          <label class="text-sm font-medium text-text-secondary" for="time">Scheduled Time (HH:MM)</label>
+          <input type="time" id="time" name="time" class="w-full rounded-lg border border-border-color bg-card-color px-3 py-2 text-text-primary focus:border-primary-color focus:ring-primary-color">
+        </div>
       </form>
     </main>
   </div>
@@ -540,12 +552,28 @@ NEW_GAME_SETUP_TEMPLATE = ADMIN_HEAD + """
   </footer>
 </div>
 <script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const statusSelect = document.getElementById('status');
+    const timeSection = document.getElementById('time-section');
+    function toggleTimeSection() {
+      if (statusSelect.value === 'UPCOMING') {
+        timeSection.classList.remove('hidden');
+      } else {
+        timeSection.classList.add('hidden');
+      }
+    }
+    statusSelect.addEventListener('change', toggleTimeSection);
+    toggleTimeSection();
+  });
+
   function validateGameForm() {
     const team1 = document.getElementById('team-1').value;
     const team2 = document.getElementById('team-2').value;
     const gameType = document.getElementById('game-type').value;
     const ageGroup = document.getElementById('age-group').value;
     const gender = document.getElementById('gender').value;
+    const status = document.getElementById('status').value;
+    const time = document.getElementById('time').value;
     const statusDiv = document.getElementById('game-status');
     const statusMsg = document.getElementById('game-status-message');
     statusDiv.classList.add('hidden');
@@ -571,6 +599,11 @@ NEW_GAME_SETUP_TEMPLATE = ADMIN_HEAD + """
     }
     if (gender === '') {
       statusMsg.innerText = 'Please select the Gender.';
+      statusDiv.classList.remove('hidden');
+      return false;
+    }
+    if (status === 'UPCOMING' && time === '') {
+      statusMsg.innerText = 'Please select the start time for upcoming games.';
       statusDiv.classList.remove('hidden');
       return false;
     }
@@ -639,6 +672,7 @@ SCORING_INTERFACE_TEMPLATE = ADMIN_HEAD + """
       <button onclick="sendUpdate('OUT_PLUS')" class="bg-red-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-600 transition-colors min-h-[48px] text-sm">Out +1</button>
       <button onclick="sendUpdate('NEXT_INNING')" class="bg-blue-700 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 transition-colors min-h-[48px] text-sm">Next Half Inning</button>
       <button onclick="sendUpdate('RESET_COUNT')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm col-span-2">Reset Count</button>
+      <button onclick="sendUpdate('END_GAME')" class="col-span-2 bg-red-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-800 transition-colors">End Game</button>
     </div>
     <!-- Status Message -->
     <div id="status-message" class="p-3 rounded-lg text-center hidden text-sm font-medium bg-green-100 text-text-primary"></div>
@@ -736,8 +770,18 @@ def index():
 
 @app.route('/softball')
 def softball_scores():
-    sorted_games = sorted(GAMES_DATA, key=lambda g: 0 if g['status'] == 'LIVE' else 1)
-    return render_template_string(HTML_TEMPLATE, games=sorted_games)
+    filter_type = request.args.get('filter', 'all').lower()
+    games = GAMES_DATA[:]
+    if filter_type == 'live':
+        games = [g for g in games if g['status'] == 'LIVE']
+    elif filter_type == 'upcoming':
+        games = [g for g in games if g['status'] == 'UPCOMING']
+    elif filter_type == 'past':
+        games = [g for g in games if g['status'] == 'FINISHED']
+        games.reverse()
+    else:
+        games.sort(key=lambda g: (0 if g['status']=='LIVE' else 1 if g['status']=='UPCOMING' else 2, g['code']))
+    return render_template_string(HTML_TEMPLATE, games=games, filter=filter_type)
 
 @app.route('/softball/game/<game_code>')
 def game_detail(game_code):
@@ -773,6 +817,17 @@ def web_admin():
     device_id_suffix = str(random.randint(100, 999))
     return render_template_string(ADMIN_DASHBOARD_TEMPLATE, title="Admin Dashboard", games=admin_games, device_id_suffix=device_id_suffix)
 
+@app.route('/softball/admin/go_live/<game_code>')
+def go_live(game_code):
+    if not is_admin():
+        return redirect(url_for('web_login'))
+    game = find_game(game_code)
+    if game and game['status'] == 'UPCOMING':
+        game['status'] = 'LIVE'
+        game['period'] = '1st Inning'
+        game['time'] = None
+    return redirect(url_for('web_admin'))
+
 @app.route('/softball/admin/hotspot_setup/<device_id>')
 def hotspot_setup(device_id):
     if not is_admin() and device_id != 'web':
@@ -801,6 +856,10 @@ def create_game():
     game_type = request.form.get('game_type')
     age_group = request.form.get('age_group')
     gender = request.form.get('gender')
+    status = request.form.get('status', 'LIVE')
+    time_str = request.form.get('time', '')
+    if status == 'UPCOMING' and not time_str:
+        return "Time is required for upcoming games.", 400
     if not all([home_team, away_team, game_type, age_group, gender]):
         return "Missing required game details.", 400
     new_game = {
@@ -809,12 +868,12 @@ def create_game():
         "away_team": away_team,
         "home_score": 0,
         "away_score": 0,
-        "status": "LIVE",
-        "period": "1st Inning",
+        "status": status,
+        "period": "Pre-Game" if status == 'UPCOMING' else "1st Inning",
         "game_type": game_type,
         "age_group": age_group,
         "gender": gender,
-        "time": None,
+        "time": time_str if status == 'UPCOMING' else None,
         "device_id": device_id,
         "balls": 0, "strikes": 0, "outs": 0, "bases_state": "0"
     }
@@ -849,28 +908,20 @@ def update_score(game_code):
     elif action == 'BALL_PLUS':
         game['balls'] += 1
         if game['balls'] >= 4:
-            if '3' in game['bases_state']:
-                if '2' in game['bases_state']:
-                    if '1' in game['bases_state']:
-                        if '1' in game['period']:
-                            game['away_score'] += 1
-                        else:
-                            game['home_score'] += 1
-                        game['bases_state'] = '123'
-                    else:
-                        game['bases_state'] = '123'
-                else:
-                    game['bases_state'] = '13'
-            else:
-                if game['bases_state'] == '0':
-                    game['bases_state'] = '1'
-                else:
-                    new_bases = ""
-                    if '2' in game['bases_state']: new_bases += '3'
-                    if '1' in game['bases_state']: new_bases += '2'
-                    new_bases += '1'
-                    game['bases_state'] = new_bases.split('').sort().join('').replace('4', '')
             game['balls'], game['strikes'] = 0, 0
+            scored = '3' in game['bases_state']
+            new_bases_list = []
+            if '2' in game['bases_state']:
+                new_bases_list.append('3')
+            if '1' in game['bases_state']:
+                new_bases_list.append('2')
+            new_bases_list.append('1')
+            game['bases_state'] = ''.join(sorted(new_bases_list))
+            if scored:
+                if game['period'].endswith('Top'):
+                    game['away_score'] += 1
+                else:
+                    game['home_score'] += 1
     elif action == 'STRIKE_PLUS':
         game['strikes'] += 1
         if game['strikes'] >= 3:
@@ -878,7 +929,6 @@ def update_score(game_code):
             game['balls'], game['strikes'] = 0, 0
     elif action == 'OUT_PLUS':
         game['outs'] += 1
-        game['balls'], game['strikes'] = 0, 0
     elif action == 'RESET_COUNT':
         game['balls'], game['strikes'] = 0, 0
     elif action == 'SET_BASES' and 'bases_state' in data:
@@ -889,14 +939,18 @@ def update_score(game_code):
         if current_period.endswith('Top'):
             game['period'] = current_period.replace('Top', 'Bottom')
         elif current_period.endswith('Bottom'):
-            inning_num = int(current_period.split(' ')[0][:-2])
-            game['period'] = f"{inning_num + 1}st Inning Top"
+            inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
+            inning_num = int(inning_num_str)
+            game['period'] = f"{ordinal(inning_num + 1)} Inning Top"
         elif 'Inning' in current_period:
             game['period'] += " Top"
         else:
             if game['status'] != 'LIVE':
                 game['status'] = 'LIVE'
             game['period'] = "1st Inning Top"
+    elif action == 'END_GAME':
+        game['status'] = 'FINISHED'
+        game['period'] = 'Final'
     if game['outs'] >= 3:
         game['outs'] = 0
         game['balls'], game['strikes'], game['bases_state'] = 0, 0, "0"
@@ -904,8 +958,9 @@ def update_score(game_code):
         if current_period.endswith('Top'):
             game['period'] = current_period.replace('Top', 'Bottom')
         elif current_period.endswith('Bottom'):
-            inning_num = int(current_period.split(' ')[0][:-2])
-            game['period'] = f"{inning_num + 1}st Inning Top"
+            inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
+            inning_num = int(inning_num_str)
+            game['period'] = f"{ordinal(inning_num + 1)} Inning Top"
     return jsonify({
         "game_code": game['code'],
         "away_score": game['away_score'],
@@ -933,5 +988,3 @@ def page_not_found(e):
     """
     return render_template_string(error_html), 404
 
-if __name__ == "__main__":
-    app.run(debug=True)
