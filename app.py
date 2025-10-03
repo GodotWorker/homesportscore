@@ -3,9 +3,50 @@ import uuid
 import random
 import string
 import re
+import mysql.connector
 from flask import Flask, render_template_string, redirect, url_for, request, make_response, jsonify
 
 # --- 1. Configuration & Helper Functions ---
+
+# MySQL Configuration
+DB_CONFIG = {
+    'host': 'homesport.mysql.pythonanywhere-services.com',
+    'user': 'homesport',
+    'password': 'Dp9m%UCS9$wX@tCYEn72',
+    'database': 'homesport$default'
+}
+
+def get_db_connection():
+    return mysql.connector.connect(**DB_CONFIG)
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(7) UNIQUE NOT NULL,
+            home_team VARCHAR(255) NOT NULL,
+            away_team VARCHAR(255) NOT NULL,
+            home_score INT DEFAULT 0,
+            away_score INT DEFAULT 0,
+            status ENUM('UPCOMING', 'LIVE', 'FINISHED') DEFAULT 'UPCOMING',
+            period VARCHAR(50) DEFAULT 'Pre-Game',
+            game_type VARCHAR(50) NOT NULL,
+            age_group VARCHAR(10) NOT NULL,
+            gender ENUM('B', 'G') NOT NULL,
+            time TIME NULL,
+            device_id VARCHAR(20) NOT NULL,
+            balls INT DEFAULT 0,
+            strikes INT DEFAULT 0,
+            outs INT DEFAULT 0,
+            bases_state VARCHAR(10) DEFAULT '0',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 # Unique ID generation for games
 def generate_game_code(length=7):
@@ -58,39 +99,54 @@ TEAMS_DATA = {
 AGE_GROUPS = [f"U{i}" for i in range(10, 20)]
 GENDER_OPTIONS = ["B", "G"]
 
-# Global variable for dynamic state management (simulating a database)
-GAMES_DATA = [
-    {
-        "code": "8C7F0A4",
-        "home_team": "Phoenix Bats",
-        "away_team": "Canyon Cats",
-        "home_score": 14,
-        "away_score": 7,
-        "status": "LIVE",
-        "period": "1st Inning",
-        "game_type": "League Game",
-        "age_group": "U14",
-        "gender": "B",
-        "time": None,
-        "device_id": "DEV-001",
-        "balls": 3, "strikes": 1, "outs": 2, "bases_state": "13"
-    },
-    {
-        "code": "A1B2C3D",
-        "home_team": "Hermanstad",
-        "away_team": "Rachel de Beer",
-        "home_score": 0,
-        "away_score": 0,
-        "status": "UPCOMING",
-        "period": "Pre-Game",
-        "game_type": "Semis",
-        "age_group": "U12",
-        "gender": "G",
-        "time": "16:00",
-        "device_id": "DEV-002",
-        "balls": 0, "strikes": 0, "outs": 0, "bases_state": "0"
-    }
-]
+def get_games():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM games ORDER BY created_at DESC")
+    games = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return games
+
+def find_game(game_code):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM games WHERE code = %s", (game_code,))
+    game = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return game
+
+def create_game_db(home_team, away_team, device_id, game_type, age_group, gender, status, time_str=None):
+    code = generate_game_code()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO games (code, home_team, away_team, status, period, game_type, age_group, gender, time, device_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (code, home_team, away_team, status, "Pre-Game" if status == 'UPCOMING' else "1st Inning", game_type, age_group, gender, time_str, device_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return code
+
+def update_game(game_code, updates):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    set_clause = ', '.join([f"{k} = %s" for k in updates.keys()])
+    values = list(updates.values()) + [game_code]
+    cursor.execute(f"UPDATE games SET {set_clause} WHERE code = %s", values)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def delete_game_db(game_code):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM games WHERE code = %s", (game_code,))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 # --- 2. HTML Templates ---
 
@@ -287,6 +343,13 @@ GAME_DETAIL_TEMPLATE = """
 </button>
 </div>
 </div>
+{% if game.status == 'LIVE' %}
+<script>
+setInterval(function() {
+    window.location.reload();
+}, 2000);
+</script>
+{% endif %}
 </body>
 </html>
 """
@@ -387,6 +450,9 @@ ADMIN_DASHBOARD_TEMPLATE = ADMIN_HEAD + """
           <a href="{{ url_for('go_live', game_code=game.code) }}" class="text-sm font-medium text-green-600 hover:underline block">Go Live</a>
         </div>
         {% endif %}
+        <div class="pt-2">
+          <button onclick="if(confirm('Are you sure you want to delete this game?')) { window.location.href = '{{ url_for('delete_game', game_code=game.code) }}'; }" class="text-sm font-medium text-red-500 hover:underline block">Delete Game</button>
+        </div>
       </div>
       {% endfor %}
       {% if not games %}
@@ -758,8 +824,8 @@ SCORING_INTERFACE_TEMPLATE = ADMIN_HEAD + """
 
 app = Flask(__name__)
 
-def find_game(game_code):
-    return next((game for game in GAMES_DATA if game["code"] == game_code), None)
+# Initialize database
+init_db()
 
 def is_admin():
     return request.cookies.get('admin_logged_in') == 'true'
@@ -771,7 +837,7 @@ def index():
 @app.route('/softball')
 def softball_scores():
     filter_type = request.args.get('filter', 'all').lower()
-    games = GAMES_DATA[:]
+    games = get_games()
     if filter_type == 'live':
         games = [g for g in games if g['status'] == 'LIVE']
     elif filter_type == 'upcoming':
@@ -813,7 +879,7 @@ def web_logout():
 def web_admin():
     if not is_admin():
         return redirect(url_for('web_login'))
-    admin_games = sorted(GAMES_DATA, key=lambda g: g['code'])
+    admin_games = get_games()
     device_id_suffix = str(random.randint(100, 999))
     return render_template_string(ADMIN_DASHBOARD_TEMPLATE, title="Admin Dashboard", games=admin_games, device_id_suffix=device_id_suffix)
 
@@ -823,9 +889,14 @@ def go_live(game_code):
         return redirect(url_for('web_login'))
     game = find_game(game_code)
     if game and game['status'] == 'UPCOMING':
-        game['status'] = 'LIVE'
-        game['period'] = '1st Inning'
-        game['time'] = None
+        update_game(game_code, {'status': 'LIVE', 'period': '1st Inning', 'time': None})
+    return redirect(url_for('web_admin'))
+
+@app.route('/softball/admin/delete/<game_code>')
+def delete_game(game_code):
+    if not is_admin():
+        return redirect(url_for('web_login'))
+    delete_game_db(game_code)
     return redirect(url_for('web_admin'))
 
 @app.route('/softball/admin/hotspot_setup/<device_id>')
@@ -862,23 +933,8 @@ def create_game():
         return "Time is required for upcoming games.", 400
     if not all([home_team, away_team, game_type, age_group, gender]):
         return "Missing required game details.", 400
-    new_game = {
-        "code": generate_game_code(),
-        "home_team": home_team,
-        "away_team": away_team,
-        "home_score": 0,
-        "away_score": 0,
-        "status": status,
-        "period": "Pre-Game" if status == 'UPCOMING' else "1st Inning",
-        "game_type": game_type,
-        "age_group": age_group,
-        "gender": gender,
-        "time": time_str if status == 'UPCOMING' else None,
-        "device_id": device_id,
-        "balls": 0, "strikes": 0, "outs": 0, "bases_state": "0"
-    }
-    GAMES_DATA.append(new_game)
-    return redirect(url_for('scoring_interface', game_code=new_game['code']))
+    code = create_game_db(home_team, away_team, device_id, game_type, age_group, gender, status, time_str)
+    return redirect(url_for('scoring_interface', game_code=code))
 
 @app.route('/softball/admin/score/<game_code>')
 def scoring_interface(game_code):
@@ -896,19 +952,22 @@ def update_score(game_code):
         return jsonify({"error": "Game not found."}), 404
     action = request.args.get('action')
     data = request.get_json(silent=True) or {}
-    if 'device_id' in data and data['device_id'] != game['device_id']:
-        if game['device_id'] != 'web' and data['device_id'] != 'web':
+    device_id = data.get('device_id', game['device_id'])
+    if device_id != game['device_id']:
+        if game['device_id'] != 'web' and device_id != 'web':
             return jsonify({"error": "Unauthorized device."}), 403
+    updates = {}
     if action == 'H_SCORE_PLUS':
-        game['home_score'] += 1
-        game['balls'], game['strikes'], game['outs'], game['bases_state'] = 0, 0, 0, "0"
+        updates['home_score'] = game['home_score'] + 1
+        updates['bases_state'] = "0"
     elif action == 'A_SCORE_PLUS':
-        game['away_score'] += 1
-        game['balls'], game['strikes'], game['outs'], game['bases_state'] = 0, 0, 0, "0"
+        updates['away_score'] = game['away_score'] + 1
+        updates['bases_state'] = "0"
     elif action == 'BALL_PLUS':
-        game['balls'] += 1
-        if game['balls'] >= 4:
-            game['balls'], game['strikes'] = 0, 0
+        updates['balls'] = game['balls'] + 1
+        if game['balls'] + 1 >= 4:
+            updates['balls'] = 0
+            updates['strikes'] = 0
             scored = '3' in game['bases_state']
             new_bases_list = []
             if '2' in game['bases_state']:
@@ -916,61 +975,72 @@ def update_score(game_code):
             if '1' in game['bases_state']:
                 new_bases_list.append('2')
             new_bases_list.append('1')
-            game['bases_state'] = ''.join(sorted(new_bases_list))
+            updates['bases_state'] = ''.join(sorted(new_bases_list))
             if scored:
                 if game['period'].endswith('Top'):
-                    game['away_score'] += 1
+                    updates['away_score'] = game['away_score'] + 1
                 else:
-                    game['home_score'] += 1
+                    updates['home_score'] = game['home_score'] + 1
     elif action == 'STRIKE_PLUS':
-        game['strikes'] += 1
-        if game['strikes'] >= 3:
-            game['outs'] += 1
-            game['balls'], game['strikes'] = 0, 0
+        updates['strikes'] = game['strikes'] + 1
+        if game['strikes'] + 1 >= 3:
+            updates['outs'] = game['outs'] + 1
+            updates['balls'] = 0
+            updates['strikes'] = 0
     elif action == 'OUT_PLUS':
-        game['outs'] += 1
+        updates['outs'] = game['outs'] + 1
     elif action == 'RESET_COUNT':
-        game['balls'], game['strikes'] = 0, 0
+        updates['balls'] = 0
+        updates['strikes'] = 0
     elif action == 'SET_BASES' and 'bases_state' in data:
-        game['bases_state'] = data['bases_state'].split('').sort().join('').replace('0', '')
+        updates['bases_state'] = data['bases_state'].split('').sort().join('').replace('0', '')
     elif action == 'NEXT_INNING':
-        game['balls'], game['strikes'], game['outs'], game['bases_state'] = 0, 0, 0, "0"
+        updates['balls'] = 0
+        updates['strikes'] = 0
+        updates['outs'] = 0
+        updates['bases_state'] = "0"
         current_period = game['period']
         if current_period.endswith('Top'):
-            game['period'] = current_period.replace('Top', 'Bottom')
+            updates['period'] = current_period.replace('Top', 'Bottom')
         elif current_period.endswith('Bottom'):
             inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
             inning_num = int(inning_num_str)
-            game['period'] = f"{ordinal(inning_num + 1)} Inning Top"
+            updates['period'] = f"{ordinal(inning_num + 1)} Inning Top"
         elif 'Inning' in current_period:
-            game['period'] += " Top"
+            updates['period'] = current_period + " Top"
         else:
             if game['status'] != 'LIVE':
-                game['status'] = 'LIVE'
-            game['period'] = "1st Inning Top"
+                updates['status'] = 'LIVE'
+            updates['period'] = "1st Inning Top"
     elif action == 'END_GAME':
-        game['status'] = 'FINISHED'
-        game['period'] = 'Final'
-    if game['outs'] >= 3:
-        game['outs'] = 0
-        game['balls'], game['strikes'], game['bases_state'] = 0, 0, "0"
+        updates['status'] = 'FINISHED'
+        updates['period'] = 'Final'
+    if 'outs' in updates and updates['outs'] >= 3:
+        updates['outs'] = 0
+        updates['balls'] = 0
+        updates['strikes'] = 0
+        updates['bases_state'] = "0"
         current_period = game['period']
         if current_period.endswith('Top'):
-            game['period'] = current_period.replace('Top', 'Bottom')
+            updates['period'] = current_period.replace('Top', 'Bottom')
         elif current_period.endswith('Bottom'):
             inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
             inning_num = int(inning_num_str)
-            game['period'] = f"{ordinal(inning_num + 1)} Inning Top"
-    return jsonify({
-        "game_code": game['code'],
-        "away_score": game['away_score'],
-        "home_score": game['home_score'],
-        "balls": game['balls'],
-        "strikes": game['strikes'],
-        "outs": game['outs'],
-        "bases_state": game['bases_state'],
-        "period": game['period']
-    })
+            updates['period'] = f"{ordinal(inning_num + 1)} Inning Top"
+    if updates:
+        update_game(game_code, updates)
+        updated_game = find_game(game_code)
+        return jsonify({
+            "game_code": updated_game['code'],
+            "away_score": updated_game['away_score'],
+            "home_score": updated_game['home_score'],
+            "balls": updated_game['balls'],
+            "strikes": updated_game['strikes'],
+            "outs": updated_game['outs'],
+            "bases_state": updated_game['bases_state'],
+            "period": updated_game['period']
+        })
+    return jsonify({"error": "No valid action."}), 400
 
 @app.errorhandler(404)
 def page_not_found(e):
@@ -987,4 +1057,3 @@ def page_not_found(e):
     </body></html>
     """
     return render_template_string(error_html), 404
-
