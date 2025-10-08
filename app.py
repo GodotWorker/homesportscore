@@ -3,8 +3,10 @@ import uuid
 import random
 import string
 import re
+from datetime import datetime
 import mysql.connector
-from flask import Flask, render_template_string, redirect, url_for, request, make_response, jsonify
+from flask import Flask, render_template_string, redirect, url_for, request, make_response, jsonify, session, flash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- 1. Configuration & Helper Functions ---
 
@@ -41,9 +43,106 @@ def init_db():
             strikes INT DEFAULT 0,
             outs INT DEFAULT 0,
             bases_state VARCHAR(10) DEFAULT '0',
+            finished_at TIMESTAMP NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Add finished_at column if it doesn't exist
+    cursor.execute("SHOW COLUMNS FROM games LIKE 'finished_at'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE games ADD COLUMN finished_at TIMESTAMP NULL")
+    
+    # Users table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role ENUM('super_admin', 'admin', 'editor') DEFAULT 'editor',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Seed super admin if not exists
+    cursor.execute("SELECT id FROM users WHERE username = 'mj'")
+    if not cursor.fetchone():
+        hash_pw = generate_password_hash('softball')
+        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, 'super_admin')", ('mj', hash_pw))
+    
+    # New table for players
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            team VARCHAR(255) NOT NULL,
+            positions TEXT NULL,
+            jersey_number INT NULL,
+            image_url VARCHAR(500) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Make jersey_number NULL if not already
+    cursor.execute("SHOW COLUMNS FROM players LIKE 'jersey_number'")
+    col_info = cursor.fetchone()
+    if col_info and col_info[2] == 'NO':
+        cursor.execute("ALTER TABLE players MODIFY COLUMN jersey_number INT NULL")
+    
+    # Add image_url to players if not exists
+    cursor.execute("SHOW COLUMNS FROM players LIKE 'image_url'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE players ADD COLUMN image_url VARCHAR(500) NULL")
+    
+    # New table for teams (to store additional details, but use TEAMS_DATA for logos)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS teams (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) UNIQUE NOT NULL,
+            description TEXT,
+            image_url VARCHAR(500) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Add image_url to teams if not exists
+    cursor.execute("SHOW COLUMNS FROM teams LIKE 'image_url'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE teams ADD COLUMN image_url VARCHAR(500) NULL")
+    
+    # Seed sample teams if empty
+    cursor.execute("SELECT COUNT(*) FROM teams")
+    if cursor.fetchone()[0] == 0:
+        for team_name in TEAMS_DATA.keys():
+            cursor.execute("INSERT IGNORE INTO teams (name) VALUES (%s)", (team_name,))
+    
+    # Update teams with image_urls from TEAMS_DATA
+    for team_name, image_url in TEAMS_DATA.items():
+        cursor.execute("UPDATE teams SET image_url = %s WHERE name = %s", (image_url, team_name))
+    
+    # Seed sample players if empty
+    cursor.execute("SELECT COUNT(*) FROM players")
+    if cursor.fetchone()[0] == 0:
+        sample_players = [
+            ("John Doe", "Hermanstad", "Pitcher", 12, None),
+            ("Jane Smith", "Hermanstad", "Catcher", 5, None),
+            ("Mike Johnson", "Simon Bekker", "1st Base", 23, None),
+            ("Emily Davis", "Simon Bekker", "Shortstop", 7, None),
+        ]
+        for name, team, position, jersey, image_url in sample_players:
+            cursor.execute("INSERT INTO players (name, team, positions, jersey_number, image_url) VALUES (%s, %s, %s, %s, %s)", (name, team, position, jersey, image_url))
+    
+    # Stories table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stories (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            content TEXT,
+            author_id INT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+    """)
+    
     conn.commit()
     cursor.close()
     conn.close()
@@ -65,9 +164,6 @@ def ordinal(n):
         return f"{n}rd"
     else:
         return f"{n}th"
-
-# Simple password for web-based access (in a real app, this would use proper authentication)
-ADMIN_PASSWORD = "softballadmin"
 
 # Provided list of teams with image URLs
 TEAMS_DATA = {
@@ -98,6 +194,16 @@ TEAMS_DATA = {
 }
 AGE_GROUPS = [f"U{i}" for i in range(10, 20)]
 GENDER_OPTIONS = ["B", "G"]
+POSITIONS = ["Pitcher", "Catcher", "1st Base", "2nd Base", "3rd Base", "Shortstop", "Left Field", "Center Field", "Right Field"]
+
+def get_user(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return user
 
 def get_games():
     conn = get_db_connection()
@@ -106,7 +212,68 @@ def get_games():
     games = cursor.fetchall()
     cursor.close()
     conn.close()
+    # Format finished_at for display
+    for game in games:
+        game['finished_at_formatted'] = None
+        finished_at = game.get('finished_at')
+        if finished_at:
+            try:
+                game['finished_at_formatted'] = datetime.strptime(str(finished_at), '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d %H:%M')
+            except ValueError:
+                pass  # Invalid date format
     return games
+
+def get_players():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM players ORDER BY team, name")
+    players = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    for player in players:
+        if player.get('positions') == "Everywhere":
+            player['positions_list'] = ["Everywhere"]
+        elif player.get('positions'):
+            player['positions_list'] = [p.strip() for p in player['positions'].split(',')]
+        else:
+            player['positions_list'] = []
+        player['image_url'] = player.get('image_url', '')
+    return players
+
+def get_teams():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM teams ORDER BY name")
+    teams = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    # Enrich with logos
+    for team in teams:
+        team['logo'] = team.get('image_url', TEAMS_DATA.get(team['name'], ''))
+    return teams
+
+def get_stories():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT s.*, u.username as author_name 
+        FROM stories s 
+        LEFT JOIN users u ON s.author_id = u.id 
+        ORDER BY s.created_at DESC
+    """)
+    stories = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return stories
+
+def get_users():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY username")
+    users = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return users
 
 def find_game(game_code):
     conn = get_db_connection()
@@ -115,16 +282,25 @@ def find_game(game_code):
     game = cursor.fetchone()
     cursor.close()
     conn.close()
+    if game:
+        game['finished_at_formatted'] = None
+        finished_at = game.get('finished_at')
+        if finished_at:
+            try:
+                game['finished_at_formatted'] = datetime.strptime(str(finished_at), '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d %H:%M')
+            except ValueError:
+                pass
     return game
 
 def create_game_db(home_team, away_team, device_id, game_type, age_group, gender, status, time_str=None):
     code = generate_game_code()
+    period = "1st Inning Top" if status == 'LIVE' else "Pre-Game"
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO games (code, home_team, away_team, status, period, game_type, age_group, gender, time, device_id)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (code, home_team, away_team, status, "Pre-Game" if status == 'UPCOMING' else "1st Inning", game_type, age_group, gender, time_str, device_id))
+    """, (code, home_team, away_team, status, period, game_type, age_group, gender, time_str, device_id))
     conn.commit()
     cursor.close()
     conn.close()
@@ -148,9 +324,68 @@ def delete_game_db(game_code):
     cursor.close()
     conn.close()
 
+def update_user(user_id, updates):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    set_clause = ', '.join([f"{k} = %s" for k in updates.keys()])
+    values = list(updates.values()) + [user_id]
+    cursor.execute(f"UPDATE users SET {set_clause} WHERE id = %s", values)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def create_user(username, password, role):
+    hash_pw = generate_password_hash(password)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)", (username, hash_pw, role))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# --- Authorization ---
+def get_current_user():
+    if 'user_id' not in session:
+        return None
+    return get_user(session['user_id'])
+
+def is_authorized(required_role='editor'):
+    user = get_current_user()
+    if not user:
+        return False
+    role_order = {'editor': 0, 'admin': 1, 'super_admin': 2}
+    return role_order.get(user['role'], -1) >= role_order.get(required_role, 0)
+
+def is_super_admin():
+    user = get_current_user()
+    return user and user['role'] == 'super_admin'
+
 # --- 2. HTML Templates ---
 
-HTML_TEMPLATE = """
+# Base header for navigation
+BASE_HEADER = """
+<header class="sticky top-0 z-10 bg-background-color/80 backdrop-blur-sm">
+<div class="flex items-center p-4 justify-between">
+<h1 class="text-xl font-bold tracking-tight text-center flex-1"><a href="{{ url_for('home') }}">Softball Hub</a></h1>
+<div class="flex items-center gap-4">
+<a href="{{ url_for('scores') }}" class="text-text-secondary hover:text-primary-color transition-colors">Scores</a>
+<a href="{{ url_for('players') }}" class="text-text-secondary hover:text-primary-color transition-colors">Players</a>
+<a href="{{ url_for('teams') }}" class="text-text-secondary hover:text-primary-color transition-colors">Teams</a>
+<a href="{{ url_for('stories') }}" class="text-text-secondary hover:text-primary-color transition-colors">Stories</a>
+{% if current_user %}
+<a href="{{ url_for('web_admin') }}" class="text-text-secondary hover:text-primary-color transition-colors">Dashboard</a>
+<a href="{{ url_for('web_logout') }}" class="text-red-500 hover:text-red-700 transition-colors">Logout ({{ current_user.username }})</a>
+{% else %}
+<a href="{{ url_for('web_login') }}" class="flex items-center justify-center rounded-full h-10 w-10 text-primary-color hover:bg-primary-color/10 transition-colors bg-card-color">
+<span class="material-symbols-outlined"> settings </span>
+</a>
+{% endif %}
+</div>
+</div>
+</header>
+"""
+
+HOME_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -159,7 +394,7 @@ HTML_TEMPLATE = """
 <link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
 <link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
-<title>Live Softball Scores</title>
+<title>Softball Hub - Home</title>
 <link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <style type="text/tailwindcss">
@@ -183,64 +418,46 @@ HTML_TEMPLATE = """
 </head>
 <body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
 <div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
-<div class="flex-grow">
-<header class="sticky top-0 z-10 bg-background-color/80 backdrop-blur-sm">
-<div class="flex items-center p-4 justify-between">
-<h1 class="text-xl font-bold tracking-tight text-center flex-1">Live Scores</h1>
-<a href="{{ url_for('web_login') }}" class="flex items-center justify-center rounded-full h-10 w-10 text-text-primary hover:bg-card-color transition-colors">
-<span class="material-symbols-outlined"> settings </span>
-</a>
-</div>
-<div class="border-b border-border-color px-4">
-<nav class="flex gap-4 -mb-px">
-<a class="{% if filter == 'all' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=all">
-<span class="text-sm font-semibold">All</span>
-</a>
-<a class="{% if filter == 'live' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=live">
-<span class="text-sm font-semibold">Live</span>
-</a>
-<a class="{% if filter == 'upcoming' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=upcoming">
-<span class="text-sm font-semibold">Upcoming</span>
-</a>
-<a class="{% if filter == 'past' %}flex items-center justify-center border-b-2 border-primary-color text-primary-color py-3 px-2{% else %}flex items-center justify-center border-b-2 border-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary py-3 px-2 transition-colors{% endif %}" href="/softball?filter=past">
-<span class="text-sm font-semibold">Past</span>
-</a>
-</nav>
-</div>
-</header>
-<main class="p-4 space-y-4">
-{% for game in games %}
-<a href="{{ url_for('game_detail', game_code=game.code) }}">
-<div class="bg-card-color rounded-lg p-4 flex items-center justify-between {% if game.status == 'UPCOMING' %}opacity-70{% endif %}">
-<div class="flex flex-col">
-<p class="font-semibold">{{ game.away_team }} vs. {{ game.home_team }}</p>
-<div class="flex items-center gap-2">
-{% if game.status == 'LIVE' %}
-<span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
-<p class="text-text-secondary text-sm">{{ game.period }}</p>
-{% elif game.status == 'FINISHED' %}
-<p class="text-text-secondary text-sm font-bold">FINAL</p>
-{% else %}
-<p class="text-text-secondary text-sm">{{ game.time }}</p>
-{% endif %}
-</div>
-</div>
-<div class="text-lg font-bold">{{ game.away_score }} - {{ game.home_score }}</div>
-</div>
-</a>
-{% else %}
-<div class="text-center p-8 bg-card-color rounded-lg mt-12">
-<p class="text-lg text-text-secondary">No live games currently scheduled.</p>
-</div>
-{% endfor %}
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Welcome to Softball Hub</h1>
+    <p class="text-xl text-text-secondary mb-8">Your one-stop destination for live scores, player stats, team rosters, and inspiring stories from the diamond.</p>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    <a href="{{ url_for('scores') }}" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> sports_score </span>
+      <h2 class="text-xl font-bold">Live Scores</h2>
+      <p class="text-text-secondary">Follow games in real-time</p>
+    </a>
+    <a href="{{ url_for('players') }}" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> person </span>
+      <h2 class="text-xl font-bold">Players</h2>
+      <p class="text-text-secondary">View profiles and stats</p>
+    </a>
+    <a href="{{ url_for('teams') }}" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> groups </span>
+      <h2 class="text-xl font-bold">Teams</h2>
+      <p class="text-text-secondary">Rosters and schedules</p>
+    </a>
+    <a href="{{ url_for('stories') }}" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> article </span>
+      <h2 class="text-xl font-bold">Stories</h2>
+      <p class="text-text-secondary">Highlights and news</p>
+    </a>
+  </div>
+  {% if current_user %}
+  <div class="text-center">
+    <a href="{{ url_for('web_admin') }}" class="bg-primary-color text-white font-bold py-3 px-6 rounded-lg hover:bg-primary-color/80 transition-colors">Admin Dashboard</a>
+  </div>
+  {% endif %}
 </main>
-</div>
 </div>
 </body>
 </html>
 """
 
-GAME_DETAIL_TEMPLATE = """
+SCORES_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -249,7 +466,7 @@ GAME_DETAIL_TEMPLATE = """
 <link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
 <link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
-<title>Live Score</title>
+<title>Softball Hub - Scores</title>
 <link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <style type="text/tailwindcss">
@@ -272,97 +489,54 @@ GAME_DETAIL_TEMPLATE = """
 </style>
 </head>
 <body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
-<div class="relative flex h-full min-h-screen w-full flex-col justify-center items-center group/design-root overflow-hidden p-4">
-<div class="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-primary-color/20 via-transparent to-transparent opacity-50"></div>
-<div class="w-full max-w-md bg-card-color/50 backdrop-blur-xl rounded-2xl shadow-2xl p-6 md:p-8 z-10">
-<div class="flex justify-between items-center mb-6">
-<div class="flex items-center gap-2">
-{% if game.status == 'LIVE' %}
-<span class="text-red-500 text-sm font-bold animate-pulse">● LIVE</span>
-{% elif game.status == 'FINISHED' %}
-<span class="text-text-secondary text-sm font-bold">FINAL</span>
-{% else %}
-<span class="text-text-secondary text-sm font-bold">{{ game.status }}</span>
-{% endif %}
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Live Scores</h1>
+    <p class="text-xl text-text-secondary mb-8">Track all the action from ongoing and upcoming games.</p>
+  </div>
+  {% if games %}
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-4">
+    {% for game in games %}
+    <div class="bg-card-color rounded-lg p-4 border-l-4 border-primary-color">
+      <div class="flex justify-between items-center mb-2">
+        <h3 class="text-lg font-bold">{{ game.home_team }} vs {{ game.away_team }}</h3>
+        <span class="text-sm text-text-secondary">{{ game.status }}</span>
+      </div>
+      <div class="text-2xl font-bold text-center mb-2">{{ game.home_score }} - {{ game.away_score }}</div>
+      <p class="text-text-secondary">{{ game.period }}</p>
+      {% if game.finished_at_formatted %}
+      <p class="text-sm text-text-secondary mt-2">Finished: {{ game.finished_at_formatted }}</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-center text-text-secondary">No games scheduled yet.</p>
+  {% endif %}
+  {% if current_user and is_authorized('editor') %}
+  <div class="text-center">
+    <a href="{{ url_for('create_game') }}" class="bg-primary-color text-white font-bold py-2 px-4 rounded-lg hover:bg-primary-color/80 transition-colors">Create New Game</a>
+  </div>
+  {% endif %}
+</main>
 </div>
-<div class="flex items-center gap-2 text-sm font-semibold">
-<span class="text-text-secondary">{% if game.period %}{{ game.period }}{% else %}{{ game.time }}{% endif %}</span>
-<svg class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M5 15l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
-</div>
-</div>
-<div class="flex items-center justify-around text-center mb-6">
-<div class="flex flex-col items-center gap-3">
-<div class="w-20 h-20 md:w-24 md:h-24 rounded-full bg-border-color flex items-center justify-center">
-<span class="text-4xl font-bold text-white">{{ game.away_team[0] }}</span>
-</div>
-<h2 class="text-xl md:text-2xl font-bold text-text-primary">{{ game.away_team }}</h2>
-</div>
-<div class="flex items-center">
-<span class="text-5xl md:text-7xl font-black text-text-primary mx-4">{{ game.away_score }}</span>
-<span class="text-4xl md:text-5xl font-light text-text-secondary">-</span>
-<span class="text-5xl md:text-7xl font-black text-text-primary mx-4">{{ game.home_score }}</span>
-</div>
-<div class="flex flex-col items-center gap-3">
-<div class="w-20 h-20 md:w-24 md:h-24 rounded-full bg-border-color flex items-center justify-center">
-<span class="text-4xl font-bold text-white">{{ game.home_team[0] }}</span>
-</div>
-<h2 class="text-xl md:text-2xl font-bold text-text-primary">{{ game.home_team }}</h2>
-</div>
-</div>
-{% if game.status == 'LIVE' and 'Inning' in game.period %}
-<div class="grid grid-cols-3 gap-4 text-center bg-background-color/30 p-4 rounded-lg">
-<div>
-<p class="text-sm text-text-secondary font-medium">BALLS</p>
-<p class="text-2xl font-bold text-text-primary">{{ game.balls }}</p>
-</div>
-<div>
-<p class="text-sm text-text-secondary font-medium">STRIKES</p>
-<p class="text-2xl font-bold text-text-primary">{{ game.strikes }}</p>
-</div>
-<div>
-<p class="text-sm text-text-secondary font-medium">OUTS</p>
-<p class="text-2xl font-bold text-text-primary">{{ game.outs }}</p>
-</div>
-</div>
-<div class="mt-6 flex justify-center items-center">
-<div class="relative w-24 h-24">
-<div class="absolute top-1/2 left-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45
-     {% if '2' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
-<div class="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-6 rounded-sm transform rotate-45
-     {% if '3' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
-<div class="absolute top-1/2 right-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45
-     {% if '1' in game.bases_state %}bg-primary-color{% else %}bg-border-color/50{% endif %}"></div>
-<div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-6 bg-primary-color rounded-sm transform rotate-45"></div>
-</div>
-</div>
-{% endif %}
-</div>
-<div class="absolute bottom-4 right-4 z-10">
-<button onclick="window.location.reload()" class="flex items-center justify-center rounded-full h-12 w-12 text-text-primary bg-card-color/50 hover:bg-card-color transition-colors backdrop-blur-sm">
-<span class="material-symbols-outlined"> refresh </span>
-</button>
-</div>
-</div>
-{% if game.status == 'LIVE' %}
-<script>
-setInterval(function() {
-    window.location.reload();
-}, 2000);
-</script>
-{% endif %}
 </body>
 </html>
 """
 
-ADMIN_HEAD = """
+PLAYERS_TEMPLATE = """
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>{{ title }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
 <link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Players</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <style type="text/tailwindcss">
   :root {
@@ -376,14 +550,67 @@ ADMIN_HEAD = """
   .material-symbols-outlined {
     font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   }
-  .form-select {
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
-    background-position: right 0.5rem center;
-    background-repeat: no-repeat;
-    background-size: 1.5em 1.5em;
-    padding-right: 2.5rem;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+</style>
+<style>
+  body {
+    min-height: max(884px, 100dvh);
+  }
+</style>
+</head>
+<body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Players</h1>
+    <p class="text-xl text-text-secondary mb-8">Explore player profiles and statistics.</p>
+  </div>
+  {% if players %}
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for player in players %}
+    <div class="bg-card-color rounded-lg p-4">
+      {% if player.image_url %}
+      <img src="{{ player.image_url }}" alt="{{ player.name }}" class="w-full h-auto max-h-48 object-contain rounded mb-2">
+      {% endif %}
+      <h3 class="text-lg font-bold">{{ player.name }}</h3>
+      <p class="text-text-secondary">Team: {{ player.team }}</p>
+      <p class="text-text-secondary">Jersey: #{{ player.jersey_number or 'N/A' }}</p>
+      <p class="text-text-secondary">Positions: {{ player.positions_list | join(', ') if player.positions_list else 'N/A' }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-center text-text-secondary">No players found.</p>
+  {% endif %}
+</main>
+</div>
+</body>
+</html>
+"""
+
+TEAMS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
+<link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Teams</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style type="text/tailwindcss">
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   }
 </style>
 <style>
@@ -393,667 +620,396 @@ ADMIN_HEAD = """
 </style>
 </head>
 <body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
-"""
-
-WEB_LOGIN_TEMPLATE = ADMIN_HEAD + """
-<div class="flex flex-col h-screen justify-center items-center p-4">
-  <div class="w-full max-w-sm p-8 bg-card-color rounded-xl shadow-2xl">
-    <h1 class="text-2xl font-bold text-center text-primary-color mb-2">Web Admin Access</h1>
-    <h2 class="text-lg font-medium text-center text-text-primary mb-6">Create or Score Games</h2>
-    <form method="POST" action="{{ url_for('web_login') }}">
-      <div id="error-message" class="hidden p-3 bg-red-100 border border-red-500 rounded-lg mb-4 text-center text-red-700 text-sm">
-        Incorrect password. Try again.
-      </div>
-      <div class="space-y-4">
-        <input type="password" name="password" placeholder="Password" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select" autofocus>
-        <button type="submit" class="w-full bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 transition-colors">
-          Login
-        </button>
-      </div>
-    </form>
-    <p class="text-xs text-center text-text-secondary mt-4">Hint: Password is "{{ admin_password }}"</p>
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Teams</h1>
+    <p class="text-xl text-text-secondary mb-8">View team rosters and details.</p>
   </div>
-</div>
-<script>
-  {% if error %}
-    document.getElementById('error-message').classList.remove('hidden');
-  {% endif %}
-</script>
-</body>
-</html>
-"""
-
-ADMIN_DASHBOARD_TEMPLATE = ADMIN_HEAD + """
-<div class="flex flex-col min-h-screen">
-  <header class="p-4 border-b border-border-color bg-background-color/80 backdrop-blur-sm flex items-center justify-between">
-    <h1 class="text-2xl font-black text-primary-color">Admin Dashboard</h1>
-    <a href="{{ url_for('web_logout') }}" class="text-sm font-semibold text-text-secondary hover:text-red-500 transition-colors">Logout</a>
-  </header>
-  <main class="p-4 space-y-6 flex-grow">
-    <h2 class="text-xl font-bold text-text-primary">Active Games (Scoring)</h2>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      {% for game in games %}
-      <div class="bg-card-color rounded-xl shadow-lg p-4 space-y-2 border-l-4 {% if game.status == 'LIVE' %}border-red-500{% elif game.status == 'UPCOMING' %}border-primary-color{% else %}border-text-secondary{% endif %}">
-        <p class="font-bold text-lg leading-tight">{{ game.away_team }} vs. {{ game.home_team }} ({{ game.age_group }}{{ game.gender }})</p>
-        <div class="flex items-center justify-between text-sm">
-          <span class="font-medium text-text-secondary">Status: <span class="font-bold {% if game.status == 'LIVE' %}text-red-500{% else %}text-primary-color{% endif %}">{{ game.status }}</span></span>
-          <span class="font-medium text-text-secondary">Score: <span class="font-bold">{{ game.away_score }} - {{ game.home_score }}</span></span>
-        </div>
-        <div class="flex justify-between items-center mt-2 pt-2 border-t border-border-color">
-          <a href="{{ url_for('scoring_interface', game_code=game.code) }}" class="text-sm font-medium text-primary-color hover:underline">
-            Score Game (Web)
-          </a>
-          <span class="text-xs text-text-secondary">Code: {{ game.code }}</span>
-        </div>
-        {% if game.status == 'UPCOMING' %}
-        <div class="pt-2">
-          <a href="{{ url_for('go_live', game_code=game.code) }}" class="text-sm font-medium text-green-600 hover:underline block">Go Live</a>
-        </div>
-        {% endif %}
-        <div class="pt-2">
-          <button onclick="if(confirm('Are you sure you want to delete this game?')) { window.location.href = '{{ url_for('delete_game', game_code=game.code) }}'; }" class="text-sm font-medium text-red-500 hover:underline block">Delete Game</button>
-        </div>
-      </div>
-      {% endfor %}
-      {% if not games %}
-      <p class="text-text-secondary italic">No games created yet.</p>
+  {% if teams %}
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for team in teams %}
+    <div class="bg-card-color rounded-lg p-4">
+      {% if team.logo %}
+      <img src="{{ team.logo }}" alt="{{ team.name }}" class="w-full h-auto max-h-48 object-contain rounded mb-2">
+      {% endif %}
+      <h3 class="text-lg font-bold">{{ team.name }}</h3>
+      {% if team.description %}
+      <p class="text-text-secondary">{{ team.description }}</p>
       {% endif %}
     </div>
-  </main>
-  <footer class="p-4 border-t border-border-color bg-background-color/80 backdrop-blur-sm flex justify-between gap-4">
-    <a href="{{ url_for('new_game_setup', device_id='web') }}" class="flex-1 text-center bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 transition-colors">
-      Create New Game (Web)
-    </a>
-    <a href="{{ url_for('hotspot_setup', device_id='DEV-' ~ device_id_suffix) }}" class="flex-1 text-center bg-blue-900 text-white font-bold py-3 px-5 rounded-lg hover:bg-blue-800 transition-colors">
-      Setup New Device
-    </a>
-  </footer>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-center text-text-secondary">No teams found.</p>
+  {% endif %}
+</main>
 </div>
 </body>
 </html>
 """
 
-HOTSPOT_SETUP_TEMPLATE = ADMIN_HEAD + """
-<div class="flex flex-col h-screen justify-center items-center p-4">
-  <div class="w-full max-w-sm p-6 bg-card-color rounded-xl shadow-xl">
-    <h1 class="text-2xl font-bold text-center text-primary-color mb-2">Device: {{ device_id }}</h1>
-    <h2 class="text-xl font-medium text-center text-text-primary mb-6">Hotspot Setup</h2>
-    <div id="connect-section">
-      <p class="text-center text-sm text-text-secondary mb-6">Enter the admin hotspot details to configure the scoring device.</p>
-      <div class="space-y-4">
-        <input type="text" id="ssid" value="AdminHotspot" placeholder="Hotspot Name (SSID)" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select">
-        <input type="password" id="password" value="12345678" placeholder="Password" class="w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color form-select">
-        <button onclick="simulateConnection('{{ device_id }}')" class="w-full bg-blue-900 text-white font-bold py-3 px-5 rounded-lg hover:bg-blue-800 transition-colors">
-          Connect & Configure
-        </button>
+STORIES_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
+<link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Stories</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style type="text/tailwindcss">
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+</style>
+<style>
+  body {
+    min-height: max(884px, 100dvh);
+  }
+</style>
+</head>
+<body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Stories</h1>
+    <p class="text-xl text-text-secondary mb-8">Read inspiring stories from the softball community.</p>
+  </div>
+  {% if stories %}
+  <div class="space-y-4">
+    {% for story in stories %}
+    <div class="bg-card-color rounded-lg p-4">
+      <h3 class="text-lg font-bold mb-2">{{ story.title }}</h3>
+      <p class="text-text-secondary mb-2">{{ story.content[:200] }}...</p>
+      <div class="text-sm text-text-secondary">
+        By {{ story.author_name or 'Anonymous' }} on {{ story.created_at.strftime('%Y-%m-%d') }}
       </div>
     </div>
-    <div id="loading-section" class="hidden text-center">
-      <p class="text-primary-color font-semibold mb-2">Attempting connection...</p>
-      <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-primary-color mx-auto mb-4"></div>
-      <p class="text-sm text-text-secondary">Simulating network configuration... Success will redirect automatically.</p>
-    </div>
-    <div id="error-section" class="hidden p-3 bg-red-100 border border-red-500 rounded-lg mt-4 text-center">
-      <p class="text-red-700 text-sm">Connection failed. Please check details and try again.</p>
-      <button onclick="resetConnection()" class="mt-2 text-sm text-red-500 underline">Try Again</button>
-    </div>
+    {% endfor %}
   </div>
+  {% else %}
+  <p class="text-center text-text-secondary">No stories yet.</p>
+  {% endif %}
+</main>
 </div>
-<script>
-  function simulateConnection(device_id) {
-    const success = Math.random() > 0.2;
-    document.getElementById('error-section').classList.add('hidden');
-    document.getElementById('connect-section').classList.add('hidden');
-    document.getElementById('loading-section').classList.remove('hidden');
-    setTimeout(() => {
-      if (success) {
-        window.location.href = '/softball/admin/new/' + device_id;
-      } else {
-        document.getElementById('loading-section').classList.add('hidden');
-        document.getElementById('error-section').classList.remove('hidden');
-      }
-    }, 3000);
-  }
-  function resetConnection() {
-    document.getElementById('error-section').classList.add('hidden');
-    document.getElementById('connect-section').classList.remove('hidden');
-    document.getElementById('loading-section').classList.add('hidden');
-  }
-</script>
 </body>
 </html>
 """
 
-NEW_GAME_SETUP_TEMPLATE = ADMIN_HEAD + """
-<div class="flex flex-col h-screen justify-between">
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
+<link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Login</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style type="text/tailwindcss">
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+</style>
+</head>
+<body class="bg-background-color text-text-primary min-h-screen flex items-center justify-center" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class="max-w-md w-full space-y-8">
   <div>
-    <header class="p-4 flex items-center justify-between bg-background-color/80 backdrop-blur-sm border-b border-border-color">
-      <a href="{{ url_for('web_admin') }}" class="text-text-primary hover:text-primary-color transition-colors">
-        <span class="material-symbols-outlined"> arrow_back </span>
-      </a>
-      <h1 class="text-xl font-bold text-text-primary text-center flex-1 pr-6">
-        New Game Setup
-        {% if device_id != 'web' %}
-        <span class="text-sm font-normal text-text-secondary block">Device: {{ device_id }}</span>
-        {% endif %}
-      </h1>
-      <div class="w-6"></div>
-    </header>
-    <main class="p-4 space-y-6">
-      <div id="game-status" class="hidden p-3 bg-red-100 border border-red-500 rounded-lg mb-4 text-center">
-        <p id="game-status-message" class="text-red-700 text-sm font-medium">Validation Error</p>
-      </div>
-      <form id="new-game-form" method="POST" action="{{ url_for('create_game') }}" onsubmit="return validateGameForm()">
-        <input type="hidden" name="device_id" value="{{ device_id }}">
-        <div class="flex items-center justify-between space-x-2">
-          <div class="flex-1">
-            <label class="text-sm font-medium text-text-secondary block mb-1">Away Team</label>
-            <select name="away_team" aria-label="Team 1" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color" id="team-1">
-              <option value="" disabled selected>Select Team</option>
-              {% for team_name in team_names %}
-              <option>{{ team_name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <span class="text-text-secondary font-bold text-lg">vs</span>
-          <div class="flex-1">
-            <label class="text-sm font-medium text-text-secondary block mb-1">Home Team</label>
-            <select name="home_team" aria-label="Team 2" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color" id="team-2">
-              <option value="" disabled selected>Select Team</option>
-              {% for team_name in team_names %}
-              <option>{{ team_name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-        </div>
-        <div class="space-y-2 mt-6">
-          <label class="text-sm font-medium text-text-secondary" for="game-type">Game Type</label>
-          <select name="game_type" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color" id="game-type">
-            <option value="" disabled selected>Select Game Type</option>
-            <option>Semis</option>
-            <option>Finals</option>
-            <option>Playoffs</option>
-            <option>League Game</option>
-            <option>Exhibition</option>
-          </select>
-        </div>
-        <div class="grid grid-cols-2 gap-4 mt-6">
-          <div class="space-y-2">
-            <label class="text-sm font-medium text-text-secondary" for="age-group">Age Group</label>
-            <select name="age_group" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color" id="age-group">
-              <option value="" disabled selected>Select Age</option>
-              {% for age in age_groups %}
-              <option>{{ age }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="space-y-2">
-            <label class="text-sm font-medium text-text-secondary" for="gender">Gender</label>
-            <select name="gender" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color" id="gender">
-              <option value="" disabled selected>Select Gender</option>
-              {% for gender in gender_options %}
-              <option>{{ gender }}</option>
-              {% endfor %}
-            </select>
-          </div>
-        </div>
-        <div class="space-y-2 mt-6">
-          <label class="text-sm font-medium text-text-secondary" for="status">Start Status</label>
-          <select name="status" id="status" class="form-select w-full rounded-lg border-border-color bg-card-color text-text-primary focus:border-primary-color focus:ring-primary-color">
-            <option value="LIVE">Start Live</option>
-            <option value="UPCOMING">Upcoming</option>
-          </select>
-        </div>
-        <div id="time-section" class="space-y-2 mt-6 hidden">
-          <label class="text-sm font-medium text-text-secondary" for="time">Scheduled Time (HH:MM)</label>
-          <input type="time" id="time" name="time" class="w-full rounded-lg border border-border-color bg-card-color px-3 py-2 text-text-primary focus:border-primary-color focus:ring-primary-color">
-        </div>
-      </form>
-    </main>
+    <h2 class="mt-6 text-center text-3xl font-bold text-text-primary">Sign in to your account</h2>
   </div>
-  <footer class="p-4 pb-8 bg-background-color/80 backdrop-blur-sm border-t border-border-color">
-    <button form="new-game-form" type="submit" class="w-full bg-red-500 text-white font-bold py-3 px-5 rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
-      Go Live!
-    </button>
-  </footer>
+  <form class="mt-8 space-y-6" action="{{ url_for('web_login') }}" method="POST">
+    <div class="rounded-md shadow-sm space-y-4">
+      <div>
+        <label for="username" class="block text-sm font-medium text-text-secondary">Username</label>
+        <input id="username" name="username" type="text" required class="relative block w-full rounded-md border-0 py-1.5 px-3 text-text-primary placeholder:text-text-secondary bg-card-color focus:outline-none focus:ring-1 focus:ring-primary-color focus:border-primary-color sm:text-sm">
+      </div>
+      <div>
+        <label for="password" class="block text-sm font-medium text-text-secondary">Password</label>
+        <input id="password" name="password" type="password" required class="relative block w-full rounded-md border-0 py-1.5 px-3 text-text-primary placeholder:text-text-secondary bg-card-color focus:outline-none focus:ring-1 focus:ring-primary-color focus:border-primary-color sm:text-sm">
+      </div>
+    </div>
+    <div>
+      <button type="submit" class="group relative flex w-full justify-center rounded-md bg-primary-color py-2 px-4 text-sm font-medium text-white hover:bg-primary-color/80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-color">
+        Sign in
+      </button>
+    </div>
+  </form>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="mt-4">
+        {% for message in messages %}
+          <p class="text-red-600 text-sm">{{ message }}</p>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
 </div>
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const statusSelect = document.getElementById('status');
-    const timeSection = document.getElementById('time-section');
-    function toggleTimeSection() {
-      if (statusSelect.value === 'UPCOMING') {
-        timeSection.classList.remove('hidden');
-      } else {
-        timeSection.classList.add('hidden');
-      }
-    }
-    statusSelect.addEventListener('change', toggleTimeSection);
-    toggleTimeSection();
-  });
-
-  function validateGameForm() {
-    const team1 = document.getElementById('team-1').value;
-    const team2 = document.getElementById('team-2').value;
-    const gameType = document.getElementById('game-type').value;
-    const ageGroup = document.getElementById('age-group').value;
-    const gender = document.getElementById('gender').value;
-    const status = document.getElementById('status').value;
-    const time = document.getElementById('time').value;
-    const statusDiv = document.getElementById('game-status');
-    const statusMsg = document.getElementById('game-status-message');
-    statusDiv.classList.add('hidden');
-    if (team1 === '' || team2 === '') {
-      statusMsg.innerText = 'Please select both the Away Team and the Home Team.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    if (team1 === team2) {
-      statusMsg.innerText = 'The Away Team and Home Team must be different.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    if (gameType === '') {
-      statusMsg.innerText = 'Please select the Game Type.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    if (ageGroup === '') {
-      statusMsg.innerText = 'Please select the Age Group.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    if (gender === '') {
-      statusMsg.innerText = 'Please select the Gender.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    if (status === 'UPCOMING' && time === '') {
-      statusMsg.innerText = 'Please select the start time for upcoming games.';
-      statusDiv.classList.remove('hidden');
-      return false;
-    }
-    return true;
-  }
-</script>
 </body>
 </html>
 """
 
-SCORING_INTERFACE_TEMPLATE = ADMIN_HEAD + """
-<div class="flex flex-col min-h-screen justify-between">
-  <header class="p-4 border-b border-border-color bg-background-color/80 backdrop-blur-sm flex items-center justify-between">
-    <h1 class="text-xl font-bold text-primary-color">{{ game.away_team[0] }} vs {{ game.home_team[0] }} Scorepad</h1>
-    <span class="text-sm font-medium text-text-secondary">Game Code: <span class="font-bold text-primary-color">{{ game.code }}</span></span>
-  </header>
-  <main class="p-6 flex-grow space-y-6">
-    <!-- Scoreboard -->
-    <div class="bg-card-color rounded-xl p-6 shadow-lg">
-      <div class="flex justify-between items-center mb-4">
-        <span id="period-display" class="text-sm font-semibold text-text-secondary">{{ game.period }}</span>
-        <span class="text-xs font-mono bg-border-color px-2 py-0.5 rounded-full text-text-primary">Device: {{ game.device_id }}</span>
-      </div>
-      <div class="flex justify-between items-center text-center">
-        <div class="w-1/3">
-          <p class="text-lg font-medium text-text-primary">{{ game.away_team }}</p>
-          <p id="away-score" class="text-4xl font-extrabold text-primary-color">{{ game.away_score }}</p>
-        </div>
-        <span class="text-3xl font-light text-text-secondary">-</span>
-        <div class="w-1/3">
-          <p class="text-lg font-medium text-text-primary">{{ game.home_team }}</p>
-          <p id="home-score" class="text-4xl font-extrabold text-primary-color">{{ game.home_score }}</p>
-        </div>
-      </div>
-    </div>
-    <!-- Count Display -->
-    <div class="grid grid-cols-3 gap-4 text-center bg-card-color rounded-xl p-6 shadow-lg">
-      <div>
-        <p class="text-xs text-text-secondary font-medium">BALLS</p>
-        <p id="balls" class="text-xl font-bold text-text-primary">{{ game.balls }}</p>
-      </div>
-      <div>
-        <p class="text-xs text-text-secondary font-medium">STRIKES</p>
-        <p id="strikes" class="text-xl font-bold text-text-primary">{{ game.strikes }}</p>
-      </div>
-      <div>
-        <p class="text-xs text-text-secondary font-medium">OUTS</p>
-        <p id="outs" class="text-xl font-bold text-text-primary">{{ game.outs }}</p>
-      </div>
-    </div>
-    <!-- Base Runner Diamond -->
-    <div class="flex justify-center items-center bg-card-color rounded-xl p-6 shadow-lg">
-      <div class="relative w-24 h-24">
-        <div id="base-3" onclick="toggleBase('3')" class="cursor-pointer absolute top-0 left-1/2 -translate-x-1/2 w-6 h-6 rounded-sm transform rotate-45 transition-colors duration-200 {% if '3' in game.bases_state %}bg-primary-color{% else %}bg-border-color{% endif %}"></div>
-        <div id="base-2" onclick="toggleBase('2')" class="cursor-pointer absolute top-1/2 left-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45 transition-colors duration-200 {% if '2' in game.bases_state %}bg-primary-color{% else %}bg-border-color{% endif %}"></div>
-        <div id="base-1" onclick="toggleBase('1')" class="cursor-pointer absolute top-1/2 right-0 -translate-y-1/2 w-6 h-6 rounded-sm transform rotate-45 transition-colors duration-200 {% if '1' in game.bases_state %}bg-primary-color{% else %}bg-border-color{% endif %}"></div>
-        <div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-6 bg-primary-color rounded-sm transform rotate-45"></div>
-      </div>
-    </div>
-    <!-- Scoring Controls -->
-    <div class="grid grid-cols-2 gap-4 bg-card-color rounded-xl p-6 shadow-lg">
-      <button onclick="sendUpdate('H_SCORE_PLUS')" class="bg-blue-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-800 transition-colors min-h-[48px] text-sm">Home Run +1</button>
-      <button onclick="sendUpdate('A_SCORE_PLUS')" class="bg-blue-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-800 transition-colors min-h-[48px] text-sm">Away Run +1</button>
-      <button onclick="sendUpdate('BALL_PLUS')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm">Ball +1</button>
-      <button onclick="sendUpdate('STRIKE_PLUS')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm">Strike +1</button>
-      <button onclick="sendUpdate('OUT_PLUS')" class="bg-red-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-600 transition-colors min-h-[48px] text-sm">Out +1</button>
-      <button onclick="sendUpdate('NEXT_INNING')" class="bg-blue-700 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 transition-colors min-h-[48px] text-sm">Next Half Inning</button>
-      <button onclick="sendUpdate('RESET_COUNT')" class="bg-blue-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors min-h-[48px] text-sm col-span-2">Reset Count</button>
-      <button onclick="sendUpdate('END_GAME')" class="col-span-2 bg-red-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-800 transition-colors">End Game</button>
-    </div>
-    <!-- Status Message -->
-    <div id="status-message" class="p-3 rounded-lg text-center hidden text-sm font-medium bg-green-100 text-text-primary"></div>
-  </main>
+ADMIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
+<link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Admin Dashboard</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style type="text/tailwindcss">
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+</style>
+<style>
+  body {
+    min-height: max(884px, 100dvh);
+  }
+</style>
+</head>
+<body class="bg-background-color text-text-primary" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4 space-y-6">
+  <div class="text-center">
+    <h1 class="text-4xl font-bold text-primary-color mb-4">Admin Dashboard</h1>
+    <p class="text-xl text-text-secondary mb-8">Manage games, users, and content.</p>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {% if is_authorized('editor') %}
+    <a href="{{ url_for('create_game') }}" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> add </span>
+      <h2 class="text-xl font-bold">Create Game</h2>
+    </a>
+    {% endif %}
+    {% if is_authorized('admin') %}
+    <a href="#" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> manage_accounts </span>
+      <h2 class="text-xl font-bold">Manage Users</h2>
+    </a>
+    {% endif %}
+    {% if is_super_admin() %}
+    <a href="#" class="bg-card-color rounded-lg p-6 text-center hover:shadow-lg transition-shadow">
+      <span class="material-symbols-outlined text-4xl text-primary-color mb-2 block"> security </span>
+      <h2 class="text-xl font-bold">System Settings</h2>
+    </a>
+    {% endif %}
+  </div>
+  <div class="bg-card-color rounded-lg p-6">
+    <h2 class="text-xl font-bold mb-4">Quick Stats</h2>
+    <p>Total Games: {{ games|length }}</p>
+    <p>Total Players: {{ players|length }}</p>
+    <p>Total Stories: {{ stories|length }}</p>
+  </div>
+</main>
 </div>
-<script>
-  const GAME_CODE = "{{ game.code }}";
-  let currentBases = "{{ game.bases_state }}";
-  function updateBasesUI() {
-    ['1', '2', '3'].forEach(base => {
-      const element = document.getElementById('base-' + base);
-      if (element) {
-        if (currentBases.includes(base)) {
-          element.classList.remove('bg-border-color');
-          element.classList.add('bg-primary-color');
-        } else {
-          element.classList.remove('bg-primary-color');
-          element.classList.add('bg-border-color');
-        }
-      }
-    });
-  }
-  function toggleBase(base) {
-    let newBases = currentBases;
-    if (newBases.includes(base)) {
-      newBases = newBases.replace(base, '');
-    } else {
-      newBases += base;
-    }
-    currentBases = newBases.split('').sort().join('');
-    sendUpdate('SET_BASES', { bases_state: currentBases });
-  }
-  async function sendUpdate(action, extraData = {}) {
-    const statusDiv = document.getElementById('status-message');
-    statusDiv.classList.remove('hidden', 'bg-red-100', 'bg-green-100');
-    statusDiv.classList.add('bg-border-color', 'text-text-primary');
-    statusDiv.innerText = `Sending action: ${action}...`;
-    const payload = {
-      device_id: "{{ game.device_id }}",
-      ...extraData
-    };
-    try {
-      const response = await fetch(`/softball/api/update_score/${GAME_CODE}?action=${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await response.json();
-      if (response.ok) {
-        document.getElementById('away-score').innerText = data.away_score;
-        document.getElementById('home-score').innerText = data.home_score;
-        document.getElementById('balls').innerText = data.balls;
-        document.getElementById('strikes').innerText = data.strikes;
-        document.getElementById('outs').innerText = data.outs;
-        document.getElementById('period-display').innerText = data.period;
-        currentBases = data.bases_state;
-        updateBasesUI();
-        statusDiv.classList.remove('bg-border-color');
-        statusDiv.classList.add('bg-green-100');
-        statusDiv.innerText = 'Update successful!';
-      } else {
-        statusDiv.classList.remove('bg-border-color');
-        statusDiv.classList.add('bg-red-100');
-        statusDiv.innerText = 'Error: ' + (data.error || 'Failed to update score.');
-      }
-    } catch (error) {
-      statusDiv.classList.remove('bg-border-color');
-      statusDiv.classList.add('bg-red-100');
-      statusDiv.innerText = 'Network Error. Could not reach server.';
-      console.error(error);
-    }
-    setTimeout(() => {
-      statusDiv.classList.add('hidden');
-    }, 2000);
-  }
-  updateBasesUI();
-</script>
 </body>
 </html>
 """
 
-# --- 3. Flask App Initialization and Routing ---
+CREATE_GAME_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link crossorigin="" href="https://fonts.gstatic.com/" rel="preconnect"/>
+<link as="style" href="https://fonts.googleapis.com/css2?display=swap&amp;family=Lexend%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900" onload="this.rel='stylesheet'" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
+<title>Softball Hub - Create Game</title>
+<link href="data:image/x-icon;base64," rel="icon" type="image/x-icon"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style type="text/tailwindcss">
+  :root {
+    --primary-color: #0b73da;
+    --background-color: #f5f7f8;
+    --card-color: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --border-color: #d1d5db;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+</style>
+</head>
+<body class="bg-background-color text-text-primary min-h-screen" style='font-family: Lexend, "Noto Sans", sans-serif;'>
+<div class="relative flex h-auto min-h-screen w-full flex-col justify-between group/design-root overflow-x-hidden">
+""" + BASE_HEADER + """
+<main class="p-4">
+  <div class="max-w-md mx-auto bg-card-color rounded-lg p-6">
+    <h2 class="text-2xl font-bold mb-4">Create New Game</h2>
+    <form action="{{ url_for('create_game') }}" method="POST">
+      <div class="space-y-4">
+        <div>
+          <label for="home_team" class="block text-sm font-medium text-text-secondary">Home Team</label>
+          <select id="home_team" name="home_team" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+            {% for team in teams %}
+            <option value="{{ team.name }}">{{ team.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="away_team" class="block text-sm font-medium text-text-secondary">Away Team</label>
+          <select id="away_team" name="away_team" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+            {% for team in teams %}
+            <option value="{{ team.name }}">{{ team.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="game_type" class="block text-sm font-medium text-text-secondary">Game Type</label>
+          <input id="game_type" name="game_type" type="text" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+        </div>
+        <div>
+          <label for="age_group" class="block text-sm font-medium text-text-secondary">Age Group</label>
+          <select id="age_group" name="age_group" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+            {% for age in AGE_GROUPS %}
+            <option value="{{ age }}">{{ age }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="gender" class="block text-sm font-medium text-text-secondary">Gender</label>
+          <select id="gender" name="gender" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+            {% for g in GENDER_OPTIONS %}
+            <option value="{{ g }}">{{ 'Boys' if g == 'B' else 'Girls' }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="status" class="block text-sm font-medium text-text-secondary">Status</label>
+          <select id="status" name="status" required class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+            <option value="UPCOMING">Upcoming</option>
+            <option value="LIVE">Live</option>
+          </select>
+        </div>
+        <div>
+          <label for="time" class="block text-sm font-medium text-text-secondary">Time (Optional)</label>
+          <input id="time" name="time" type="time" class="block w-full rounded-md border-0 py-1.5 px-3 bg-white text-text-primary">
+        </div>
+        <div>
+          <button type="submit" class="w-full bg-primary-color text-white py-2 px-4 rounded-md hover:bg-primary-color/80">Create Game</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</main>
+</div>
+</body>
+</html>
+"""
+
+# --- 3. Flask App Setup ---
 
 app = Flask(__name__)
+app.secret_key = 'your-secret-key-change-this-in-production'  # Change to a secure random key
 
-# Initialize database
+# Initialize database on module import (runs once when the module is loaded, e.g., in WSGI)
 init_db()
 
-def is_admin():
-    return request.cookies.get('admin_logged_in') == 'true'
-
 @app.route('/')
-def index():
-    return redirect(url_for('softball_scores'))
+def home():
+    return render_template_string(HOME_TEMPLATE, current_user=get_current_user())
 
-@app.route('/softball')
-def softball_scores():
-    filter_type = request.args.get('filter', 'all').lower()
-    games = get_games()
-    if filter_type == 'live':
-        games = [g for g in games if g['status'] == 'LIVE']
-    elif filter_type == 'upcoming':
-        games = [g for g in games if g['status'] == 'UPCOMING']
-    elif filter_type == 'past':
-        games = [g for g in games if g['status'] == 'FINISHED']
-        games.reverse()
-    else:
-        games.sort(key=lambda g: (0 if g['status']=='LIVE' else 1 if g['status']=='UPCOMING' else 2, g['code']))
-    return render_template_string(HTML_TEMPLATE, games=games, filter=filter_type)
+@app.route('/scores')
+def scores():
+    return render_template_string(SCORES_TEMPLATE, current_user=get_current_user(), games=get_games(), is_authorized=is_authorized)
 
-@app.route('/softball/game/<game_code>')
-def game_detail(game_code):
-    game = find_game(game_code)
-    if game:
-        return render_template_string(GAME_DETAIL_TEMPLATE, game=game)
-    return f"Game with code {game_code} not found.", 404
+@app.route('/players')
+def players():
+    return render_template_string(PLAYERS_TEMPLATE, current_user=get_current_user(), players=get_players())
 
-@app.route('/softball/admin/login', methods=['GET', 'POST'])
+@app.route('/teams')
+def teams():
+    return render_template_string(TEAMS_TEMPLATE, current_user=get_current_user(), teams=get_teams())
+
+@app.route('/stories')
+def stories():
+    return render_template_string(STORIES_TEMPLATE, current_user=get_current_user(), stories=get_stories())
+
+@app.route('/login', methods=['GET', 'POST'])
 def web_login():
-    error = False
     if request.method == 'POST':
-        password = request.form.get('password')
-        if password == ADMIN_PASSWORD:
-            response = make_response(redirect(url_for('web_admin')))
-            response.set_cookie('admin_logged_in', 'true', max_age=3600)
-            return response
+        username = request.form['username']
+        password = request.form['password']
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            return redirect(url_for('web_admin'))
         else:
-            error = True
-    return render_template_string(WEB_LOGIN_TEMPLATE, title="Admin Login", error=error, admin_password=ADMIN_PASSWORD)
+            flash('Invalid username or password')
+    return render_template_string(LOGIN_TEMPLATE)
 
-@app.route('/softball/admin/logout')
+@app.route('/logout')
 def web_logout():
-    response = make_response(redirect(url_for('softball_scores')))
-    response.set_cookie('admin_logged_in', '', expires=0)
-    return response
+    session.pop('user_id', None)
+    return redirect(url_for('home'))
 
-@app.route('/softball/admin')
+@app.route('/admin')
 def web_admin():
-    if not is_admin():
+    if not is_authorized():
         return redirect(url_for('web_login'))
-    admin_games = get_games()
-    device_id_suffix = str(random.randint(100, 999))
-    return render_template_string(ADMIN_DASHBOARD_TEMPLATE, title="Admin Dashboard", games=admin_games, device_id_suffix=device_id_suffix)
+    return render_template_string(ADMIN_TEMPLATE, current_user=get_current_user(), games=get_games(), players=get_players(), stories=get_stories(), is_authorized=is_authorized, is_super_admin=is_super_admin)
 
-@app.route('/softball/admin/go_live/<game_code>')
-def go_live(game_code):
-    if not is_admin():
-        return redirect(url_for('web_login'))
-    game = find_game(game_code)
-    if game and game['status'] == 'UPCOMING':
-        update_game(game_code, {'status': 'LIVE', 'period': '1st Inning', 'time': None})
-    return redirect(url_for('web_admin'))
-
-@app.route('/softball/admin/delete/<game_code>')
-def delete_game(game_code):
-    if not is_admin():
-        return redirect(url_for('web_login'))
-    delete_game_db(game_code)
-    return redirect(url_for('web_admin'))
-
-@app.route('/softball/admin/hotspot_setup/<device_id>')
-def hotspot_setup(device_id):
-    if not is_admin() and device_id != 'web':
-        return redirect(url_for('web_login'))
-    return render_template_string(HOTSPOT_SETUP_TEMPLATE, title="Device Setup", device_id=device_id)
-
-@app.route('/softball/admin/new/<device_id>')
-def new_game_setup(device_id):
-    if not is_admin():
-        return redirect(url_for('web_login'))
-    team_names = sorted(TEAMS_DATA.keys())
-    return render_template_string(NEW_GAME_SETUP_TEMPLATE, 
-                                 title="New Game", 
-                                 team_names=team_names, 
-                                 age_groups=AGE_GROUPS, 
-                                 gender_options=GENDER_OPTIONS,
-                                 device_id=device_id)
-
-@app.route('/softball/admin/create_game', methods=['POST'])
+@app.route('/create_game', methods=['GET', 'POST'])
 def create_game():
-    if not is_admin():
+    if not is_authorized('editor'):
         return redirect(url_for('web_login'))
-    home_team = request.form.get('home_team')
-    away_team = request.form.get('away_team')
-    device_id = request.form.get('device_id')
-    game_type = request.form.get('game_type')
-    age_group = request.form.get('age_group')
-    gender = request.form.get('gender')
-    status = request.form.get('status', 'LIVE')
-    time_str = request.form.get('time', '')
-    if status == 'UPCOMING' and not time_str:
-        return "Time is required for upcoming games.", 400
-    if not all([home_team, away_team, game_type, age_group, gender]):
-        return "Missing required game details.", 400
-    code = create_game_db(home_team, away_team, device_id, game_type, age_group, gender, status, time_str)
-    return redirect(url_for('scoring_interface', game_code=code))
+    if request.method == 'POST':
+        home_team = request.form['home_team']
+        away_team = request.form['away_team']
+        game_type = request.form['game_type']
+        age_group = request.form['age_group']
+        gender = request.form['gender']
+        status = request.form['status']
+        time_str = request.form.get('time')
+        device_id = str(uuid.uuid4())[:20]  # Generate a mock device ID
+        code = create_game_db(home_team, away_team, device_id, game_type, age_group, gender, status, time_str)
+        flash(f'Game created with code: {code}')
+        return redirect(url_for('scores'))
+    return render_template_string(CREATE_GAME_TEMPLATE, current_user=get_current_user(), teams=get_teams(), AGE_GROUPS=AGE_GROUPS, GENDER_OPTIONS=GENDER_OPTIONS)
 
-@app.route('/softball/admin/score/<game_code>')
-def scoring_interface(game_code):
-    if not is_admin():
-        return redirect(url_for('web_login'))
-    game = find_game(game_code)
-    if not game:
-        return f"Game with code {game_code} not found.", 404
-    return render_template_string(SCORING_INTERFACE_TEMPLATE, title="Scorepad", game=game)
-
-@app.route('/softball/api/update_score/<game_code>', methods=['POST'])
-def update_score(game_code):
-    game = find_game(game_code)
-    if not game:
-        return jsonify({"error": "Game not found."}), 404
-    action = request.args.get('action')
-    data = request.get_json(silent=True) or {}
-    device_id = data.get('device_id', game['device_id'])
-    if device_id != game['device_id']:
-        if game['device_id'] != 'web' and device_id != 'web':
-            return jsonify({"error": "Unauthorized device."}), 403
-    updates = {}
-    if action == 'H_SCORE_PLUS':
-        updates['home_score'] = game['home_score'] + 1
-        updates['bases_state'] = "0"
-    elif action == 'A_SCORE_PLUS':
-        updates['away_score'] = game['away_score'] + 1
-        updates['bases_state'] = "0"
-    elif action == 'BALL_PLUS':
-        updates['balls'] = game['balls'] + 1
-        if game['balls'] + 1 >= 4:
-            updates['balls'] = 0
-            updates['strikes'] = 0
-            scored = '3' in game['bases_state']
-            new_bases_list = []
-            if '2' in game['bases_state']:
-                new_bases_list.append('3')
-            if '1' in game['bases_state']:
-                new_bases_list.append('2')
-            new_bases_list.append('1')
-            updates['bases_state'] = ''.join(sorted(new_bases_list))
-            if scored:
-                if game['period'].endswith('Top'):
-                    updates['away_score'] = game['away_score'] + 1
-                else:
-                    updates['home_score'] = game['home_score'] + 1
-    elif action == 'STRIKE_PLUS':
-        updates['strikes'] = game['strikes'] + 1
-        if game['strikes'] + 1 >= 3:
-            updates['outs'] = game['outs'] + 1
-            updates['balls'] = 0
-            updates['strikes'] = 0
-    elif action == 'OUT_PLUS':
-        updates['outs'] = game['outs'] + 1
-    elif action == 'RESET_COUNT':
-        updates['balls'] = 0
-        updates['strikes'] = 0
-    elif action == 'SET_BASES' and 'bases_state' in data:
-        updates['bases_state'] = data['bases_state'].split('').sort().join('').replace('0', '')
-    elif action == 'NEXT_INNING':
-        updates['balls'] = 0
-        updates['strikes'] = 0
-        updates['outs'] = 0
-        updates['bases_state'] = "0"
-        current_period = game['period']
-        if current_period.endswith('Top'):
-            updates['period'] = current_period.replace('Top', 'Bottom')
-        elif current_period.endswith('Bottom'):
-            inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
-            inning_num = int(inning_num_str)
-            updates['period'] = f"{ordinal(inning_num + 1)} Inning Top"
-        elif 'Inning' in current_period:
-            updates['period'] = current_period + " Top"
-        else:
-            if game['status'] != 'LIVE':
-                updates['status'] = 'LIVE'
-            updates['period'] = "1st Inning Top"
-    elif action == 'END_GAME':
-        updates['status'] = 'FINISHED'
-        updates['period'] = 'Final'
-    if 'outs' in updates and updates['outs'] >= 3:
-        updates['outs'] = 0
-        updates['balls'] = 0
-        updates['strikes'] = 0
-        updates['bases_state'] = "0"
-        current_period = game['period']
-        if current_period.endswith('Top'):
-            updates['period'] = current_period.replace('Top', 'Bottom')
-        elif current_period.endswith('Bottom'):
-            inning_num_str = re.match(r'\d+', current_period.split()[0]).group()
-            inning_num = int(inning_num_str)
-            updates['period'] = f"{ordinal(inning_num + 1)} Inning Top"
-    if updates:
-        update_game(game_code, updates)
-        updated_game = find_game(game_code)
-        return jsonify({
-            "game_code": updated_game['code'],
-            "away_score": updated_game['away_score'],
-            "home_score": updated_game['home_score'],
-            "balls": updated_game['balls'],
-            "strikes": updated_game['strikes'],
-            "outs": updated_game['outs'],
-            "bases_state": updated_game['bases_state'],
-            "period": updated_game['period']
-        })
-    return jsonify({"error": "No valid action."}), 400
-
-@app.errorhandler(404)
-def page_not_found(e):
-    error_html = ADMIN_HEAD + f"""
-    <div class="flex flex-col h-screen justify-center items-center p-4">
-      <div class="text-center">
-        <h1 class="text-6xl font-black text-primary-color mb-4">404</h1>
-        <p class="text-xl text-text-primary mb-6">Page Not Found</p>
-        <a href="{url_for('softball_scores')}" class="bg-primary-color text-white font-bold py-2 px-4 rounded-lg hover:bg-primary-color/80 transition-colors">
-          Go to Home
-        </a>
-      </div>
-    </div>
-    </body></html>
-    """
-    return render_template_string(error_html), 404
+if __name__ == '__main__':
+    app.run(debug=True)
